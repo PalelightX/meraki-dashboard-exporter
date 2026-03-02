@@ -147,6 +147,15 @@ export MERAKI_EXPORTER_WEBHOOKS__REQUIRE_SECRET=true
 
 # Optional: Maximum payload size in bytes (default: 1MB)
 export MERAKI_EXPORTER_WEBHOOKS__MAX_PAYLOAD_SIZE=1048576
+
+# Optional: Emit accepted webhook payloads as one-line JSON logs (default: true)
+export MERAKI_EXPORTER_WEBHOOKS__LOG_EVENTS=true
+
+# Optional: Include alertData in event logs (default: true)
+export MERAKI_EXPORTER_WEBHOOKS__LOG_INCLUDE_ALERT_DATA=true
+
+# Optional: Drop selected top-level fields before logging (JSON array)
+export MERAKI_EXPORTER_WEBHOOKS__LOG_DROP_FIELDS='["sharedSecret"]'
 ```
 
 ### Configuring Meraki Dashboard

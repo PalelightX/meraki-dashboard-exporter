@@ -149,9 +149,18 @@ def test_webhook_endpoint_payload_too_large(
 
 
 def test_webhook_endpoint_invalid_secret(
-    webhook_enabled_settings: Settings, valid_webhook_payload: dict
+    webhook_enabled_settings: Settings,
+    valid_webhook_payload: dict,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test webhook endpoint rejects invalid shared secret."""
+    called = {"value": False}
+
+    def fake_emit(*args: object, **kwargs: object) -> None:
+        called["value"] = True
+
+    monkeypatch.setattr("meraki_dashboard_exporter.app.emit_webhook_event_log", fake_emit)
+
     exporter = ExporterApp(webhook_enabled_settings)
     app = exporter.create_app()
     client = TestClient(app)
@@ -168,12 +177,31 @@ def test_webhook_endpoint_invalid_secret(
 
     assert response.status_code == 401
     assert "validation failed" in response.json()["detail"].lower()
+    assert called["value"] is False
 
 
 def test_webhook_endpoint_valid_payload(
-    webhook_enabled_settings: Settings, valid_webhook_payload: dict
+    webhook_enabled_settings: Settings,
+    valid_webhook_payload: dict,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test webhook endpoint processes valid payload successfully."""
+    captured: dict[str, object] = {}
+
+    def fake_emit(
+        payload: dict,
+        *,
+        enabled: bool,
+        include_alert_data: bool,
+        drop_fields: list[str],
+    ) -> None:
+        captured["payload"] = payload
+        captured["enabled"] = enabled
+        captured["include_alert_data"] = include_alert_data
+        captured["drop_fields"] = drop_fields
+
+    monkeypatch.setattr("meraki_dashboard_exporter.app.emit_webhook_event_log", fake_emit)
+
     exporter = ExporterApp(webhook_enabled_settings)
     app = exporter.create_app()
     client = TestClient(app)
@@ -187,6 +215,10 @@ def test_webhook_endpoint_valid_payload(
     assert response.status_code == 200
     assert response.json()["status"] == "success"
     assert "processed" in response.json()["message"].lower()
+    assert captured["payload"] == valid_webhook_payload
+    assert captured["enabled"] is True
+    assert captured["include_alert_data"] is True
+    assert captured["drop_fields"] == ["sharedSecret"]
 
 
 def test_webhook_endpoint_no_secret_validation(

@@ -153,7 +153,8 @@ class WebhookHandler:
             ).inc()
 
             # Track processing duration
-            duration = time.time() - start_time
+            # Avoid zero-duration observations on high-resolution/fast paths.
+            duration = max(time.time() - start_time, 1e-9)
             self.processing_duration.labels(
                 org_id=org_id,
                 alert_type=alert_type,

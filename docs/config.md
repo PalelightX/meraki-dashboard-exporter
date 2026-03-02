@@ -94,6 +94,9 @@ Webhook receiver configuration
 | `MERAKI_EXPORTER_WEBHOOKS__SHARED_SECRET` | `SecretStr | None` | `_(none)_` | Shared secret for webhook validation (recommended) |
 | `MERAKI_EXPORTER_WEBHOOKS__REQUIRE_SECRET` | `bool` | `True` | Require shared secret validation (disable for testing only) |
 | `MERAKI_EXPORTER_WEBHOOKS__MAX_PAYLOAD_SIZE` | `int` | `1048576` | Maximum webhook payload size in bytes (min: 1024, max: 10485760) |
+| `MERAKI_EXPORTER_WEBHOOKS__LOG_EVENTS` | `bool` | `True` | Emit accepted webhook payloads as one-line JSON to stdout |
+| `MERAKI_EXPORTER_WEBHOOKS__LOG_INCLUDE_ALERT_DATA` | `bool` | `True` | Include `alertData` in webhook event logs |
+| `MERAKI_EXPORTER_WEBHOOKS__LOG_DROP_FIELDS` | `list[str]` | `["sharedSecret"]` | Top-level payload fields to drop before logging |
 
 Webhooks are received on `POST /api/webhooks/meraki` when enabled.
 

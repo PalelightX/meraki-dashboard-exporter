@@ -282,6 +282,18 @@ class WebhookSettings(BaseModel):
         le=10 * 1024 * 1024,  # 10MB max
         description="Maximum webhook payload size in bytes",
     )
+    log_events: bool = Field(
+        True,
+        description="Emit accepted webhook payloads as one-line JSON to stdout",
+    )
+    log_include_alert_data: bool = Field(
+        True,
+        description="Include alertData in webhook event logs",
+    )
+    log_drop_fields: list[str] = Field(
+        default_factory=lambda: ["sharedSecret"],
+        description="Top-level payload fields to drop before logging",
+    )
 
 
 class CollectorSettings(BaseModel):

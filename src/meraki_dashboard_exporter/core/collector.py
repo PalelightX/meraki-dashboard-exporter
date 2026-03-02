@@ -451,7 +451,7 @@ class MetricCollector(ABC):
                     endpoint=operation,
                     retry_reason=reason,
                 ).inc()
-        except ImportError, AttributeError:
+        except (ImportError, AttributeError):
             # Silently fail if client not available - metrics are optional
             pass
 

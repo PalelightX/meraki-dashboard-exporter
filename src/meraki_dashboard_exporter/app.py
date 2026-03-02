@@ -30,6 +30,7 @@ from .core.logging import get_logger, setup_logging
 from .core.metric_expiration import MetricExpirationManager
 from .core.otel_logging import OTELLoggingConfig
 from .core.otel_tracing import TracingConfig
+from .core.webhook_event_logging import emit_webhook_event_log
 from .core.webhook_handler import WebhookHandler
 
 if TYPE_CHECKING:
@@ -783,6 +784,13 @@ class ExporterApp:
                     status_code=401,
                     detail="Webhook validation failed",
                 )
+
+            emit_webhook_event_log(
+                payload=payload_data,
+                enabled=exporter.settings.webhooks.log_events,
+                include_alert_data=exporter.settings.webhooks.log_include_alert_data,
+                drop_fields=exporter.settings.webhooks.log_drop_fields,
+            )
 
             # Return success
             return {"status": "success", "message": "Webhook processed"}

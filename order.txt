@@ -1,0 +1,80 @@
+1. 背景と目的
+
+Cisco Meraki から送られてくる Webhook アラートを受信し、イベントログを Cloud Logging に構造化して蓄積したい。
+目的は、蓄積したイベントを生成AIに食わせて障害分析（原因推定・相関・時系列整理）に使うこと。
+
+当初は OpenTelemetry Collector（webhookeventreceiver）で受ける案も検討したが、Meraki 側の Template Editor（ヘッダー自由編集）が Early Access/Beta のため、現状の環境では「ヘッダーに secret を載せる」前提を置けない。よって Collector 側 required_header による入口検証を選定条件にできない。
+そのため、既に Webhook 受信と secret 検証機能を持つ meraki-dashboard-exporter を改造して、受信イベントをログに出す方式にする。
+
+2. 実現したいこと（要件）
+
+GKE 上で稼働する meraki-dashboard-exporter が Meraki Webhook を受信する（既存の POST /api/webhooks/meraki を利用）
+
+Webhook の shared secret 検証が通ったイベントのみをログ出力する（不正はログに残さない）
+
+Meraki Webhook のペイロードを、sharedSecret を除いて “そのまま丸ごと” 構造化ログとして出力する
+
+理由：Meraki の Webhook はトップレベルのスキーマが固定で、アラート固有の重要情報は alertData に入るため、AI分析では alertData を落としたくない
+
+デフォルトでは alertData を含めて出す（ON）
+
+ただし運用上の都合で切り替えたいので、オプションとして alertData を落とす設定も用意する（既定はON）
+
+3. ログ出力方式（Cloud Logging への載せ方）
+
+Cloud Logging API 直叩きはせず、GKE 標準のログ収集に任せる
+
+stdout に 1イベント=1行の JSON を出力する
+
+Cloud Logging 側で JSON を構造化として扱える形にする
+
+4. ログスキーマ方針（改訂ポイント）
+
+Meraki の Webhook payload は、サンプル通り共通キーが並ぶ固定スキーマで、alertData がアラート固有情報の中心
+
+よって ログは「payload をそのまま出す」方針にする
+
+例外は sharedSecret のみ（必ず削除してから出す）
+
+デフォルトは alertData を含める（既定ON）
+
+5. 実装変更点（ファイル単位）
+(A) src/meraki_dashboard_exporter/app.py
+
+POST /api/webhooks/meraki のハンドラで、process_webhook() が成功し WebhookPayload が返った後に、イベントログ出力を実行する
+
+secret mismatch などで payload is None の場合は 401 のまま、ログは出さない（既存仕様を維持）
+
+(B) src/meraki_dashboard_exporter/core/config_models.py
+
+WebhookSettings にログ出力関連の設定を追加
+
+log_events: bool = False（ログ出力自体のON/OFF。安全のため既定は OFF でも良いが、運用方針に合わせて決める）
+
+log_include_alert_data: bool = True（既定は True：alertData を含めて出す）
+
+もし raw をそのまま出すなら log_drop_fields: list[str] = ["sharedSecret"] のような一般化もあり
+
+(C) 新規ファイル追加（推奨）src/meraki_dashboard_exporter/core/webhook_event_logging.py
+
+役割：WebhookPayload（もしくは dict）を受け取り、ログ用 dict を生成して stdout に JSON で出す
+
+実装方針：
+
+受信 payload を dict 化
+
+sharedSecret を削除
+
+log_include_alert_data が false の場合は alertData を削除（ただし既定は true）
+
+print(json.dumps(obj, ensure_ascii=False)) のように 1行 JSON で吐く
+
+6. 受け入れ条件（Doneの定義）
+
+正しい shared secret の Webhook を送ると Cloud Logging に JSON ログが1件出る
+
+JSON ログには Meraki payload の全フィールドが入っているが、sharedSecret だけは存在しない
+
+log_include_alert_data=true（既定）では alertData も出る
+
+secret mismatch の Webhook は拒否され、ログは出ない
