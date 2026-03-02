@@ -56,3 +56,12 @@ def test_settings_with_custom_values(monkeypatch):
     assert settings.update_intervals.medium == 300
     assert settings.update_intervals.slow == 900
     assert settings.logging.level == "DEBUG"
+
+
+def test_settings_with_alert_sensor_collection_disabled(monkeypatch):
+    """Test collector sub-feature flag parsing for alerts sensor collection."""
+    monkeypatch.setenv("MERAKI_EXPORTER_MERAKI__API_KEY", "a" * 40)
+    monkeypatch.setenv("MERAKI_EXPORTER_COLLECTORS__ALERTS_ENABLE_SENSOR_ALERTS", "false")
+
+    settings = Settings()
+    assert settings.collectors.alerts_enable_sensor_alerts is False

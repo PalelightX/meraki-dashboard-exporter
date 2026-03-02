@@ -132,6 +132,7 @@ class AlertsCollector(MetricCollector):
         start_time = time.time()
         metrics_collected = 0
         api_calls_made = 0
+        sensor_alerts_enabled = self.settings.collectors.alerts_enable_sensor_alerts
 
         try:
             # Get organizations from cache or API
@@ -171,17 +172,20 @@ class AlertsCollector(MetricCollector):
             all_networks = []
             for org_id in org_ids:
                 if self.inventory:
-                    # Use filtered network list (only networks with sensors)
-                    org_sensor_networks = await self.inventory.get_networks_with_device_types(
-                        org_id, ["sensor"]
-                    )
                     # Also get all networks for health alerts (from cache)
                     org_all_networks = await self.inventory.get_networks(org_id)
+                    # Use filtered network list (only networks with sensors) when enabled
+                    if sensor_alerts_enabled:
+                        org_sensor_networks = await self.inventory.get_networks_with_device_types(
+                            org_id, ["sensor"]
+                        )
+                    else:
+                        org_sensor_networks = []
                 else:
                     # Fallback: get all networks (can't filter without inventory)
-                    org_sensor_networks = await self._get_networks(org_id) or []
-                    org_all_networks = org_sensor_networks
-                    if org_sensor_networks:
+                    org_all_networks = await self._get_networks(org_id) or []
+                    org_sensor_networks = org_all_networks if sensor_alerts_enabled else []
+                    if org_all_networks:
                         api_calls_made += 1
 
                 # Add org info to networks
@@ -195,22 +199,25 @@ class AlertsCollector(MetricCollector):
                     network["orgName"] = org_names.get(org_id, org_id)
                 all_networks.extend(org_all_networks)
 
-            # Collect sensor alerts only for networks with sensors
-            if sensor_networks:
-                logger.debug(
-                    "Collecting sensor alerts for filtered networks",
-                    total_networks=len(all_networks),
-                    networks_with_sensors=len(sensor_networks),
-                )
-                sensor_tasks = [
-                    self._collect_network_sensor_alerts(network) for network in sensor_networks
-                ]
-                sensor_results = await asyncio.gather(*sensor_tasks, return_exceptions=True)
+            # Collect sensor alerts only for networks with sensors (and when enabled)
+            if sensor_alerts_enabled:
+                if sensor_networks:
+                    logger.debug(
+                        "Collecting sensor alerts for filtered networks",
+                        total_networks=len(all_networks),
+                        networks_with_sensors=len(sensor_networks),
+                    )
+                    sensor_tasks = [
+                        self._collect_network_sensor_alerts(network) for network in sensor_networks
+                    ]
+                    sensor_results = await asyncio.gather(*sensor_tasks, return_exceptions=True)
 
-                # Count successful sensor alert collections
-                for result in sensor_results:
-                    if not isinstance(result, Exception):
-                        api_calls_made += 1
+                    # Count successful sensor alert collections
+                    for result in sensor_results:
+                        if not isinstance(result, Exception):
+                            api_calls_made += 1
+            else:
+                logger.debug("Sensor alert overview collection disabled by configuration")
 
             # Collect network health alerts for all networks
             if all_networks:

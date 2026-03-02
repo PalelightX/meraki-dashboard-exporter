@@ -309,6 +309,13 @@ class CollectorSettings(BaseModel):
         le=600,
         description="Timeout for individual collector runs in seconds",
     )
+    alerts_enable_sensor_alerts: bool = Field(
+        True,
+        description=(
+            "Enable sensor alert overview collection inside AlertsCollector. "
+            "When false, organization and network health alerts are still collected."
+        ),
+    )
 
     @property
     def active_collectors(self) -> set[str]:

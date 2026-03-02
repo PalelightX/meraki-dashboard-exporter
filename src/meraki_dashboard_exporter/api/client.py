@@ -336,7 +336,7 @@ class AsyncMerakiClient:
                             if retry_after_header:
                                 try:
                                     retry_after = float(retry_after_header)
-                                except TypeError, ValueError:
+                                except (TypeError, ValueError):
                                     retry_after = None
 
                         base_wait = (

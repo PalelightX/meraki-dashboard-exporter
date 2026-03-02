@@ -268,6 +268,32 @@ class TestAlertsCollector(BaseCollectorTest):
         assert collector.update_tier == UpdateTier.MEDIUM
         assert self.update_tier == UpdateTier.MEDIUM
 
+    async def test_sensor_alerts_can_be_disabled_with_setting(
+        self, collector, mock_api_builder, metrics
+    ):
+        """Test sensor alert overview calls are skipped when disabled in settings."""
+        collector.settings.collectors.alerts_enable_sensor_alerts = False
+
+        org = OrganizationFactory.create(org_id="123", name="Test Org")
+        network = NetworkFactory.create(network_id="N_123", name="Test Network")
+
+        api = (
+            mock_api_builder
+            .with_organizations([org])
+            .with_custom_response("getOrganizationAssuranceAlerts", [])
+            .with_custom_response("getOrganizationNetworks", [network])
+            .with_custom_response("getNetworkHealthAlerts", [])
+            .build()
+        )
+        api.sensor.getNetworkSensorAlertsOverviewByMetric = MagicMock()
+        collector.api = api
+
+        await self.run_collector(collector)
+
+        self.assert_collector_success(collector, metrics)
+        api.sensor.getNetworkSensorAlertsOverviewByMetric.assert_not_called()
+        api.networks.getNetworkHealthAlerts.assert_called()
+
     async def test_collect_sensor_alerts(self, collector, mock_api_builder, metrics):
         """Test collection of sensor alert metrics."""
         # Set up test data
