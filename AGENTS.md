@@ -10,7 +10,7 @@ Meraki Dashboard Exporter - A production-ready Prometheus exporter that collects
 - **Security**: Never log or expose API keys, use read-only when possible
 - **Memory**: Be mindful of API rate limits and implement proper error handling
 - **Use parallel tasks/agents** when suitable use the parallel tasks and agents available to you
-- **Never issue git commands** the user will handle all 'git' commands
+<!-- - **Never issue git commands** the user will handle all 'git' commands -->
 </critical_notes>
 
 <file_map>
