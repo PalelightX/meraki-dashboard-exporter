@@ -8,6 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+WEBHOOK_EVENT_LOG_TYPE = "meraki_webhook_event"
+
 
 def _to_payload_dict(payload: Mapping[str, Any] | BaseModel) -> dict[str, Any]:
     """Convert payload into a mutable dict."""
@@ -23,6 +25,7 @@ def build_webhook_log_object(
 ) -> dict[str, Any]:
     """Build sanitized payload object for webhook event logging."""
     log_obj = _to_payload_dict(payload)
+    log_obj["logType"] = WEBHOOK_EVENT_LOG_TYPE
 
     for field in drop_fields or ["sharedSecret"]:
         log_obj.pop(field, None)

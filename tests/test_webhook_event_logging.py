@@ -7,6 +7,7 @@ import json
 from pytest import CaptureFixture
 
 from meraki_dashboard_exporter.core.webhook_event_logging import (
+    WEBHOOK_EVENT_LOG_TYPE,
     build_webhook_log_object,
     emit_webhook_event_log,
 )
@@ -22,6 +23,7 @@ def test_build_webhook_log_object_removes_secret_and_keeps_alert_data() -> None:
     log_obj = build_webhook_log_object(payload)
 
     assert log_obj["organizationId"] == "123456"
+    assert log_obj["logType"] == WEBHOOK_EVENT_LOG_TYPE
     assert log_obj["alertData"] == {"reason": "offline"}
     assert "sharedSecret" not in log_obj
 
@@ -66,6 +68,7 @@ def test_emit_webhook_event_log_outputs_one_line_json(capsys: CaptureFixture[str
     assert "\n" not in output
     parsed = json.loads(output)
     assert parsed["organizationId"] == "123456"
+    assert parsed["logType"] == WEBHOOK_EVENT_LOG_TYPE
     assert parsed["alertData"] == {"reason": "offline"}
     assert "sharedSecret" not in parsed
 
