@@ -1,4 +1,4 @@
-"""Tests for webhook receiver functionality (Phase 4.2)."""
+﻿"""Tests for webhook receiver functionality (Phase 4.2)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pydantic import SecretStr
 from meraki_dashboard_exporter.app import ExporterApp
 from meraki_dashboard_exporter.core.config import Settings
 from meraki_dashboard_exporter.core.config_models import MerakiSettings, WebhookSettings
+from meraki_dashboard_exporter.core.discovery import DiscoveryService
 
 
 @pytest.fixture
@@ -39,6 +40,22 @@ def webhook_disabled_settings() -> Settings:
         ),
         webhooks=WebhookSettings(
             enabled=False,
+        ),
+    )
+
+@pytest.fixture
+def webhook_only_settings() -> Settings:
+    """Create settings for webhook-only mode."""
+    return Settings(
+        meraki=MerakiSettings(
+            api_key=SecretStr("test_api_key_at_least_30_characters_long"),
+            org_id="123456",
+        ),
+        webhooks=WebhookSettings(
+            enabled=True,
+            shared_secret=SecretStr("test_secret"),
+            require_secret=True,
+            webhook_only_mode=True,
         ),
     )
 
@@ -269,3 +286,21 @@ def test_webhook_endpoint_missing_required_fields(
 
     assert response.status_code == 401
     # Validation should fail due to missing required fields
+def test_webhook_only_mode_skips_discovery(
+    webhook_only_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test webhook-only mode does not run discovery at startup."""
+
+    async def _should_not_run(self: DiscoveryService) -> dict:  # pragma: no cover
+        raise AssertionError("Discovery should not run in webhook-only mode")
+
+    monkeypatch.setattr(DiscoveryService, "run_discovery", _should_not_run)
+
+    exporter = ExporterApp(webhook_only_settings)
+    app = exporter.create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+

@@ -1,4 +1,4 @@
-"""Nested configuration models for better organization."""
+﻿"""Nested configuration models for better organization."""
 
 from __future__ import annotations
 
@@ -282,6 +282,13 @@ class WebhookSettings(BaseModel):
         le=10 * 1024 * 1024,  # 10MB max
         description="Maximum webhook payload size in bytes",
     )
+    webhook_only_mode: bool = Field(
+        False,
+        description=(
+            "Run as webhook-only receiver. Disables Meraki REST discovery and "
+            "periodic metric collection loops."
+        ),
+    )
     log_events: bool = Field(
         True,
         description="Emit accepted webhook payloads as one-line JSON to stdout",
@@ -399,3 +406,4 @@ class LoggingSettings(BaseModel):
         description="Logging level",
         pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
     )
+

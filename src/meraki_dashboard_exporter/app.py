@@ -1,4 +1,4 @@
-"""FastAPI application for the Meraki Dashboard Exporter."""
+﻿"""FastAPI application for the Meraki Dashboard Exporter."""
 
 from __future__ import annotations
 
@@ -52,6 +52,9 @@ class ExporterApp:
     def __init__(self, settings: Settings | None = None) -> None:
         """Initialize the exporter application with settings."""
         self.settings = settings or Settings()
+        self._webhook_only_mode = (
+            self.settings.webhooks.enabled and self.settings.webhooks.webhook_only_mode
+        )
         setup_logging(self.settings)
 
         # Initialize tracing before anything else
@@ -100,6 +103,7 @@ class ExporterApp:
             logger.info(
                 "Webhook receiver enabled",
                 require_secret=self.settings.webhooks.require_secret,
+                webhook_only_mode=self._webhook_only_mode,
             )
 
     def _handle_shutdown(self) -> None:
@@ -173,32 +177,46 @@ class ExporterApp:
             host=self.settings.server.host,
             port=self.settings.server.port,
             org_id=self.settings.meraki.org_id,
+            webhook_only_mode=self._webhook_only_mode,
         )
 
-        # Run discovery to log environment information once at startup
-        discovery = DiscoveryService(self.client.api, self.settings)
-        try:
-            self._discovery_summary = await discovery.run_discovery()
-        except Exception:
-            logger.exception("Discovery failed, continuing with normal operation")
-            self._discovery_summary = {"errors": ["discovery_failed"]}
+        if self._webhook_only_mode:
+            logger.warning(
+                "Webhook-only mode enabled; skipping Meraki REST API discovery and "
+                "collector scheduling"
+            )
+            self._discovery_summary = {
+                "mode": "webhook_only",
+                "organizations": [],
+                "networks": {},
+                "errors": [],
+            }
+            self._log_startup_summary()
+        else:
+            # Run discovery to log environment information once at startup
+            discovery = DiscoveryService(self.client.api, self.settings)
+            try:
+                self._discovery_summary = await discovery.run_discovery()
+            except Exception:
+                logger.exception("Discovery failed, continuing with normal operation")
+                self._discovery_summary = {"errors": ["discovery_failed"]}
 
-        # Start metric expiration manager (Phase 3.2)
-        await self.expiration_manager.start()
-        logger.info(
-            "Started metric expiration manager",
-            ttl_multiplier=self.settings.monitoring.metric_ttl_multiplier,
-        )
+            # Start metric expiration manager (Phase 3.2)
+            await self.expiration_manager.start()
+            logger.info(
+                "Started metric expiration manager",
+                ttl_multiplier=self.settings.monitoring.metric_ttl_multiplier,
+            )
 
-        # Start background task for initial collection and tiered loops
-        startup_task = asyncio.create_task(self._startup_collections())
-        self._background_tasks.add(startup_task)
-        startup_task.add_done_callback(self._background_tasks.discard)
+            # Start background task for initial collection and tiered loops
+            startup_task = asyncio.create_task(self._startup_collections())
+            self._background_tasks.add(startup_task)
+            startup_task.add_done_callback(self._background_tasks.discard)
 
-        # Start periodic cardinality analysis
-        cardinality_task = asyncio.create_task(self._cardinality_monitor_loop())
-        self._background_tasks.add(cardinality_task)
-        cardinality_task.add_done_callback(self._background_tasks.discard)
+            # Start periodic cardinality analysis
+            cardinality_task = asyncio.create_task(self._cardinality_monitor_loop())
+            self._background_tasks.add(cardinality_task)
+            cardinality_task.add_done_callback(self._background_tasks.discard)
 
         try:
             yield
@@ -817,3 +835,4 @@ def create_app() -> FastAPI:
         _app_instance = exporter.create_app()
     assert _app_instance is not None  # Type checker hint
     return _app_instance
+

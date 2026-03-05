@@ -1,4 +1,4 @@
-"""Unit tests for WebhookHandler class (P5.1.2 - Phase 4.2)."""
+﻿"""Unit tests for WebhookHandler class (P5.1.2 - Phase 4.2)."""
 
 from __future__ import annotations
 
@@ -241,13 +241,12 @@ class TestWebhookHandlerProcessing:
         webhook_handler.process_webhook(valid_payload)
 
         # Check that processing duration histogram has samples
-        # Note: We can't easily check the actual value, but we can check it exists
-        histogram = webhook_handler.processing_duration.labels(
-            org_id="org_123",
-            alert_type="settings_changed",
+        count_value = REGISTRY.get_sample_value(
+            "meraki_webhook_processing_duration_seconds_count",
+            {"org_id": "org_123", "alert_type": "settings_changed"},
         )
-        # The histogram should have been observed at least once
-        assert histogram._sum._value > 0  # noqa: SLF001
+        assert count_value is not None
+        assert count_value >= 1
 
     def test_process_webhook_exception_handling(self, webhook_handler: WebhookHandler) -> None:
         """Test exception handling during webhook processing."""
@@ -407,3 +406,4 @@ class TestWebhookHandlerEdgeCases:
         result = webhook_handler.process_webhook(valid_payload)
         assert result is not None
         assert result.alert_type == "test/alert-type_with.special:chars"
+

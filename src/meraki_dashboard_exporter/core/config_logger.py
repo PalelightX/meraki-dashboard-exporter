@@ -1,4 +1,4 @@
-"""Configuration logging utilities for startup visibility."""
+﻿"""Configuration logging utilities for startup visibility."""
 
 from __future__ import annotations
 
@@ -204,6 +204,12 @@ def log_startup_summary(
     )
 
     log_method("  Server", host=settings.server.host, port=settings.server.port)
+    log_method(
+        "  Webhooks",
+        enabled=settings.webhooks.enabled,
+        require_secret=settings.webhooks.require_secret,
+        webhook_only_mode=settings.webhooks.webhook_only_mode,
+    )
 
     if scheduling:
         log_method("-" * 80)
@@ -243,6 +249,11 @@ def log_startup_summary(
     if discovery_summary:
         log_method("-" * 80)
         log_method("Discovery Summary:")
+        if discovery_summary.get("mode") == "webhook_only":
+            log_method(
+                "  Mode",
+                value="webhook_only (Meraki REST discovery/collection disabled)",
+            )
 
         organizations = discovery_summary.get("organizations", [])
         org_names = [org.get("name", "unknown") for org in organizations]
@@ -333,6 +344,10 @@ def log_startup_summary(
     logger.info("  Server:")
     logger.info(f"    - Host: {settings.server.host}")
     logger.info(f"    - Port: {settings.server.port}")
+    logger.info("  Webhooks:")
+    logger.info(f"    - Enabled: {settings.webhooks.enabled}")
+    logger.info(f"    - Require Secret: {settings.webhooks.require_secret}")
+    logger.info(f"    - Webhook Only Mode: {settings.webhooks.webhook_only_mode}")
 
     # Organization Configuration
     if settings.meraki.org_id:
@@ -365,3 +380,4 @@ def log_startup_summary(
         logger.info(f"  Disabled Collectors: {', '.join(disabled_display)}")
 
     logger.info("=" * 80)
+
