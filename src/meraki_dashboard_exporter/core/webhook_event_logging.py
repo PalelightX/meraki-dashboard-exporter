@@ -9,6 +9,12 @@ from typing import Any
 from pydantic import BaseModel
 
 WEBHOOK_EVENT_LOG_TYPE = "meraki_webhook_event"
+DEFAULT_LOG_SEVERITY = "DEFAULT"
+_ALERT_LEVEL_TO_SEVERITY = {
+    "critical": "CRITICAL",
+    "warning": "WARNING",
+    "informational": "INFO",
+}
 
 
 def _to_payload_dict(payload: Mapping[str, Any] | BaseModel) -> dict[str, Any]:
@@ -25,7 +31,19 @@ def build_webhook_log_object(
 ) -> dict[str, Any]:
     """Build sanitized payload object for webhook event logging."""
     log_obj = _to_payload_dict(payload)
+
+    alert_level = str(log_obj.get("alertLevel", "")).strip().lower()
+    severity = _ALERT_LEVEL_TO_SEVERITY.get(alert_level, DEFAULT_LOG_SEVERITY)
+
+    sent_at = log_obj.get("sentAt")
+    alert_type = log_obj.get("alertType")
+
     log_obj["logType"] = WEBHOOK_EVENT_LOG_TYPE
+    log_obj["severity"] = severity
+    if sent_at:
+        log_obj["timestamp"] = sent_at
+    if alert_type:
+        log_obj["message"] = str(alert_type)
 
     for field in drop_fields or ["sharedSecret"]:
         log_obj.pop(field, None)
