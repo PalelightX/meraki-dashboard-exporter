@@ -29,7 +29,7 @@ def test_build_webhook_log_object_removes_secret_and_keeps_alert_data() -> None:
     assert log_obj["organizationId"] == "123456"
     assert log_obj["logType"] == WEBHOOK_EVENT_LOG_TYPE
     assert log_obj["severity"] == "WARNING"
-    assert log_obj["timestamp"] == "2026-03-05T12:34:56Z"
+    assert log_obj["time"] == "2026-03-05T12:34:56Z"
     assert log_obj["message"] == "settings_changed"
     assert log_obj["alertData"] == {"reason": "offline"}
     assert "sharedSecret" not in log_obj
@@ -80,7 +80,7 @@ def test_emit_webhook_event_log_outputs_one_line_json(capsys: CaptureFixture[str
     assert parsed["organizationId"] == "123456"
     assert parsed["logType"] == WEBHOOK_EVENT_LOG_TYPE
     assert parsed["severity"] == "WARNING"
-    assert parsed["timestamp"] == "2026-03-05T12:34:56Z"
+    assert parsed["time"] == "2026-03-05T12:34:56Z"
     assert parsed["message"] == "settings_changed"
     assert parsed["alertData"] == {"reason": "offline"}
     assert "sharedSecret" not in parsed

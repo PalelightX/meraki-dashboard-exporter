@@ -41,7 +41,7 @@ def build_webhook_log_object(
     log_obj["logType"] = WEBHOOK_EVENT_LOG_TYPE
     log_obj["severity"] = severity
     if sent_at:
-        log_obj["timestamp"] = sent_at
+        log_obj["time"] = sent_at
     if alert_type:
         log_obj["message"] = str(alert_type)
 
