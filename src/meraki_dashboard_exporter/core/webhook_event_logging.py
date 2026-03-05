@@ -35,13 +35,15 @@ def build_webhook_log_object(
     alert_level = str(log_obj.get("alertLevel", "")).strip().lower()
     severity = _ALERT_LEVEL_TO_SEVERITY.get(alert_level, DEFAULT_LOG_SEVERITY)
 
+    occurred_at = log_obj.get("occurredAt")
     sent_at = log_obj.get("sentAt")
     alert_type = log_obj.get("alertType")
 
     log_obj["logType"] = WEBHOOK_EVENT_LOG_TYPE
     log_obj["severity"] = severity
-    if sent_at:
-        log_obj["time"] = sent_at
+    event_time = occurred_at or sent_at
+    if event_time:
+        log_obj["time"] = event_time
     if alert_type:
         log_obj["message"] = str(alert_type)
 
