@@ -123,6 +123,7 @@ class ManagedTaskGroup:
         # Tracing support for distributed tracing context propagation
         self._span: trace.Span | None = None
         self._span_context_manager: Any = None
+        self._span_context: Any = None
 
     async def __aenter__(self) -> ManagedTaskGroup:
         """Enter the context manager with optional tracing span."""
@@ -137,7 +138,10 @@ class ManagedTaskGroup:
 
         # Enter the span context to make it current
         self._span_context_manager = trace.use_span(self._span, end_on_exit=False)
-        self._span_context_manager.__enter__()
+        # Keep enter/exit on the same context to avoid token detach mismatches
+        # when task groups are closed under cancellation/timeout paths.
+        self._span_context = copy_context()
+        self._span_context.run(self._span_context_manager.__enter__)
 
         return self
 
@@ -191,12 +195,37 @@ class ManagedTaskGroup:
             else:
                 self._span.set_status(trace.Status(trace.StatusCode.OK))
 
-            # Exit the span context
-            if self._span_context_manager is not None:
-                self._span_context_manager.__exit__(exc_type, exc_val, exc_tb)
-
-            # End the span
-            self._span.end()
+            try:
+                # Exit the span context in the same context used for __enter__.
+                if self._span_context_manager is not None:
+                    if self._span_context is not None:
+                        self._span_context.run(
+                            self._span_context_manager.__exit__,
+                            exc_type,
+                            exc_val,
+                            exc_tb,
+                        )
+                    else:
+                        self._span_context_manager.__exit__(exc_type, exc_val, exc_tb)
+            except ValueError as detach_error:
+                # OpenTelemetry context detach can fail on cancellation boundaries.
+                # Keep collection running and still end spans deterministically.
+                logger.warning(
+                    "Failed to detach OpenTelemetry span context",
+                    task_group=self.name,
+                    error_type=type(detach_error).__name__,
+                    error=str(detach_error),
+                )
+            except Exception as detach_error:
+                logger.warning(
+                    "Unexpected error detaching OpenTelemetry span context",
+                    task_group=self.name,
+                    error_type=type(detach_error).__name__,
+                    error=str(detach_error),
+                )
+            finally:
+                # End the span even if detach fails
+                self._span.end()
 
     async def create_task(
         self,

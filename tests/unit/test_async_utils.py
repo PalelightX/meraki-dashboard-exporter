@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from prometheus_client import CollectorRegistry
@@ -136,6 +137,27 @@ class TestManagedTaskGroup:
         async with ManagedTaskGroup("empty_group") as group:
             results = await group.gather()
             assert results == []
+
+    async def test_span_context_detach_value_error_does_not_propagate(self):
+        """Test detach ValueError in span context does not break task group exit."""
+        group = ManagedTaskGroup("test_group")
+
+        span = MagicMock()
+        group._span = span
+
+        span_ctx_mgr = MagicMock()
+        span_ctx_mgr.__exit__.side_effect = ValueError("token mismatch")
+        group._span_context_manager = span_ctx_mgr
+
+        class _Ctx:
+            def run(self, func, *args):
+                return func(*args)
+
+        group._span_context = _Ctx()
+
+        await group.__aexit__(None, None, None)
+
+        span.end.assert_called_once()
 
 
 class TestWithTimeout:
