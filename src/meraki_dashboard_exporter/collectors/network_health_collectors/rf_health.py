@@ -118,6 +118,20 @@ class RFHealthCollector(BaseNetworkHealthCollector):
                     serial = ap_data.get("serial", "")
                     model = ap_data.get("model", "")
                     name = device_names.get(serial, serial)
+                    device_data = {
+                        "serial": serial,
+                        "name": name,
+                        "model": model,
+                        "networkId": network_id,
+                        "networkName": network_name,
+                    }
+                    # Build base labels once per AP so wifi1-only payloads
+                    # don't reference an uninitialized variable.
+                    base_labels = create_device_labels(
+                        device_data,
+                        org_id=org_id,
+                        org_name=org_name,
+                    )
 
                     # Try to parse to domain model for validation
                     try:
@@ -141,22 +155,6 @@ class RFHealthCollector(BaseNetworkHealthCollector):
                         total_util = latest_2_4.get("utilization", 0)
                         wifi_util = latest_2_4.get("wifi", 0)
                         non_wifi_util = latest_2_4.get("nonWifi", 0)
-
-                        # Create device labels using helper
-                        device_data = {
-                            "serial": serial,
-                            "name": name,
-                            "model": model,
-                            "networkId": network_id,
-                            "networkName": network_name,
-                        }
-
-                        # Create base labels including device_type
-                        base_labels = create_device_labels(
-                            device_data,
-                            org_id=org_id,
-                            org_name=org_name,
-                        )
 
                         # Set per-AP metrics for total utilization
                         labels = {**base_labels, "utilization_type": "total"}

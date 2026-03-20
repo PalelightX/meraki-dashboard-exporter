@@ -259,6 +259,68 @@ class TestNetworkHealthCollector(BaseCollectorTest):
         # Verify success
         self.assert_collector_success(collector, metrics)
 
+    async def test_collect_channel_utilization_wifi1_only(
+        self, collector, mock_api_builder, metrics
+    ):
+        """Test wifi1-only payload does not fail in RF health collection."""
+        org = OrganizationFactory.create(org_id="123", name="Test Org")
+        network = NetworkFactory.create(
+            network_id="N_123",
+            name="Test Network",
+            product_types=["wireless"],
+            org_id=org["id"],
+        )
+        devices = [
+            DeviceFactory.create_mr(
+                serial="Q2KD-ZZZZ",
+                name="AP3",
+                model="MR44",
+                network_id=network["id"],
+            )
+        ]
+        channel_util_data = [
+            {
+                "serial": "Q2KD-ZZZZ",
+                "model": "MR44",
+                "wifi1": [{"utilization": 22, "wifi": 18, "nonWifi": 4}],
+            }
+        ]
+
+        api = (
+            mock_api_builder
+            .with_organizations([org])
+            .with_networks([network], org_id=org["id"])
+            .with_devices(devices, org_id=org["id"])
+            .with_custom_response("getNetworkNetworkHealthChannelUtilization", channel_util_data)
+            .with_custom_response("getNetworkWirelessConnectionStats", {})
+            .with_custom_response("getNetworkWirelessDataRateHistory", [])
+            .build()
+        )
+        api.organizations.getOrganizationDevices = MagicMock(return_value=devices)
+
+        collector.api = api
+        collector.rf_health_collector.api = api
+        collector.connection_stats_collector.api = api
+        collector.data_rates_collector.api = api
+        collector.bluetooth_collector.api = api
+
+        await self.run_collector(collector)
+
+        self.assert_collector_success(collector, metrics)
+        metrics.assert_gauge_value(
+            "meraki_ap_channel_utilization_5ghz_percent",
+            22,
+            org_id=org["id"],
+            org_name=org["name"],
+            serial="Q2KD-ZZZZ",
+            name="AP3",
+            model="MR44",
+            device_type="MR",
+            network_id=network["id"],
+            network_name=network["name"],
+            utilization_type="total",
+        )
+
     async def test_collect_handles_api_errors(self, collector, mock_api_builder, metrics):
         """Test handling of API errors."""
         # Set up test data
