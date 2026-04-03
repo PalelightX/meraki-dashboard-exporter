@@ -6,6 +6,7 @@ import functools
 import inspect
 import os
 from collections.abc import Callable
+from contextvars import copy_context
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from opentelemetry import trace
@@ -14,7 +15,6 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
-from opentelemetry.instrumentation.threading import ThreadingInstrumentor
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -35,6 +35,56 @@ if TYPE_CHECKING:
     from .config import Settings
 
 logger = get_logger(__name__)
+
+
+class _SafeSpanContext:
+    """Context manager that protects against OTEL context detach mismatches."""
+
+    def __init__(self, tracer: Any, span_name: str) -> None:
+        self._tracer = tracer
+        self._span_name = span_name
+        self._span: Any | None = None
+        self._span_cm: Any = None
+        self._span_ctx: Any = None
+
+    def __enter__(self) -> Any:
+        self._span = self._tracer.start_span(self._span_name)
+        self._span_cm = trace.use_span(self._span, end_on_exit=False)
+        self._span_ctx = copy_context()
+        self._span_ctx.run(self._span_cm.__enter__)
+        return self._span
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        try:
+            if self._span_cm is not None:
+                if self._span_ctx is not None:
+                    self._span_ctx.run(self._span_cm.__exit__, exc_type, exc_val, exc_tb)
+                else:
+                    self._span_cm.__exit__(exc_type, exc_val, exc_tb)
+        except ValueError as exc:
+            logger.warning(
+                "Failed to detach OpenTelemetry span context",
+                span_name=self._span_name,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Unexpected error while closing OpenTelemetry span context",
+                span_name=self._span_name,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+        finally:
+            if self._span is not None:
+                self._span.end()
+
+        return False
+
+
+def safe_start_as_current_span(tracer: Any, span_name: str) -> _SafeSpanContext:
+    """Start a span with safe context detach handling."""
+    return _SafeSpanContext(tracer, span_name)
 
 
 class TracingConfig:
@@ -174,11 +224,12 @@ class TracingConfig:
         )
         logger.debug("Instrumented httpx library")
 
-        # Instrument threading (for asyncio.to_thread calls)
-        ThreadingInstrumentor().instrument(
-            tracer_provider=self._tracer_provider,
-        )
-        logger.debug("Instrumented threading")
+        # NOTE:
+        # Threading instrumentation has caused context detach errors in
+        # long-running asyncio + to_thread workloads (e.g. collector timeout/cancel paths):
+        # "Failed to detach context" / "Token ... was created in a different Context".
+        # We intentionally skip ThreadingInstrumentor here to prioritize
+        # stable collection behavior and clean logs.
 
         # Instrument logging to correlate logs with traces
         LoggingInstrumentor().instrument(
@@ -370,7 +421,7 @@ def trace_method(
                 tracer = trace.get_tracer(func.__module__)
                 span_name = name or f"{func.__module__}.{func.__name__}"
 
-                with tracer.start_as_current_span(span_name) as span:
+                with safe_start_as_current_span(tracer, span_name) as span:
                     try:
                         # Extract and set span attributes
                         _extract_span_attributes(span, args, kwargs, attributes)
@@ -392,7 +443,7 @@ def trace_method(
                 tracer = trace.get_tracer(func.__module__)
                 span_name = name or f"{func.__module__}.{func.__name__}"
 
-                with tracer.start_as_current_span(span_name) as span:
+                with safe_start_as_current_span(tracer, span_name) as span:
                     try:
                         # Extract and set span attributes
                         _extract_span_attributes(span, args, kwargs, attributes)

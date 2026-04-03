@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from meraki_dashboard_exporter.core.config import Settings
-from meraki_dashboard_exporter.core.otel_tracing import TracingConfig
+from meraki_dashboard_exporter.core.otel_tracing import TracingConfig, safe_start_as_current_span
 
 
 class TestTracingConfigSetup:
@@ -133,3 +133,23 @@ class TestTracingConfigReinitialization:
             # Second setup should be skipped
             config.setup_tracing()
             assert mock_resource.call_count == first_call_count
+
+
+class TestSafeSpanContext:
+    """Test safe span context handling for detach errors."""
+
+    def test_safe_span_swallows_detach_value_error(self) -> None:
+        """Detach ValueError should not propagate from context manager."""
+        tracer = MagicMock()
+        span = MagicMock()
+        span_cm = MagicMock()
+        span_cm.__exit__.side_effect = ValueError("token mismatch")
+
+        tracer.start_span.return_value = span
+
+        with patch("meraki_dashboard_exporter.core.otel_tracing.trace.use_span") as mock_use_span:
+            mock_use_span.return_value = span_cm
+            with safe_start_as_current_span(tracer, "test.span") as active_span:
+                assert active_span is span
+
+        span.end.assert_called_once()

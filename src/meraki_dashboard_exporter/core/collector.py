@@ -16,6 +16,7 @@ from ..core.error_handling import ErrorCategory
 from ..core.exemplars import add_exemplar
 from ..core.logging import get_logger
 from ..core.metrics import LabelName
+from ..core.otel_tracing import safe_start_as_current_span
 
 if TYPE_CHECKING:
     from meraki import DashboardAPI
@@ -134,7 +135,7 @@ class MetricCollector(ABC):
         # Get tracer for distributed tracing (returns no-op tracer if not configured)
         tracer = trace.get_tracer(__name__)
 
-        with tracer.start_as_current_span(f"collect.{collector_name}") as span:
+        with safe_start_as_current_span(tracer, f"collect.{collector_name}") as span:
             # Set initial span attributes
             span.set_attribute("collector.name", collector_name)
             span.set_attribute("collector.tier", self.update_tier.value)

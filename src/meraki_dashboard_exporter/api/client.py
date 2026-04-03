@@ -19,6 +19,7 @@ from prometheus_client import Counter, Gauge, Histogram
 from ..core.constants.metrics_constants import CollectorMetricName
 from ..core.logging import get_logger
 from ..core.metrics import LabelName
+from ..core.otel_tracing import safe_start_as_current_span
 
 if TYPE_CHECKING:
     from ..core.config import Settings
@@ -261,7 +262,7 @@ class AsyncMerakiClient:
 
         span_name = span_name or endpoint_name
 
-        with tracer.start_as_current_span(span_name) as span:
+        with safe_start_as_current_span(tracer, span_name) as span:
             span.set_attribute("api.endpoint", endpoint_name)
             span.set_attribute("api.max_retries", max_retries)
 
