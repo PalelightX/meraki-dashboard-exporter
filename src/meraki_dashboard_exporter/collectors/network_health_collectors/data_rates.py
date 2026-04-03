@@ -57,6 +57,15 @@ class DataRatesCollector(BaseNetworkHealthCollector):
         org_name = network.get("orgName", org_id)
 
         try:
+            if not self.settings.collectors.networkhealth_enable_mr27_endpoints:
+                logger.debug(
+                    "Skipping MR27-dependent network data rates endpoint (disabled by config)",
+                    network_id=network_id,
+                    network_name=network_name,
+                    org_id=org_id,
+                )
+                return
+
             with LogContext(network_id=network_id, network_name=network_name, org_id=org_id):
                 # Use 300 second (5 minute) resolution with recent timespan
                 # Using timespan of 300 seconds to get the most recent 5-minute data block

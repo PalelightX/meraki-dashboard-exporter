@@ -92,6 +92,15 @@ class RFHealthCollector(BaseNetworkHealthCollector):
         org_name = network.get("orgName", org_id)
 
         try:
+            if not self.settings.collectors.networkhealth_enable_mr27_endpoints:
+                logger.debug(
+                    "Skipping MR27-dependent channel utilization endpoint (disabled by config)",
+                    network_id=network_id,
+                    network_name=network_name,
+                    org_id=org_id,
+                )
+                return
+
             with LogContext(network_id=network_id, network_name=network_name):
                 # Get AP names for lookup using organization devices API
                 if not org_id:

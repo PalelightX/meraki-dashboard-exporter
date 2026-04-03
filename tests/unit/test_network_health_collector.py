@@ -351,6 +351,39 @@ class TestNetworkHealthCollector(BaseCollectorTest):
         # Verify collector still marks as successful (error handling decorators)
         self.assert_collector_success(collector, metrics)
 
+    async def test_collect_skips_mr27_endpoints_when_disabled(
+        self, collector, mock_api_builder, metrics
+    ):
+        """Test MR27-dependent endpoints are skipped by config toggle."""
+        org = OrganizationFactory.create(org_id="123", name="Test Org")
+        network = NetworkFactory.create(
+            network_id="N_123",
+            name="Test Network",
+            product_types=["wireless"],
+            org_id=org["id"],
+        )
+
+        api = (
+            mock_api_builder
+            .with_organizations([org])
+            .with_networks([network], org_id=org["id"])
+            .with_devices([], org_id=org["id"])
+            .build()
+        )
+        collector.api = api
+        collector.rf_health_collector.api = api
+        collector.connection_stats_collector.api = api
+        collector.data_rates_collector.api = api
+        collector.bluetooth_collector.api = api
+
+        collector.settings.collectors.networkhealth_enable_mr27_endpoints = False
+
+        await self.run_collector(collector)
+
+        self.assert_collector_success(collector, metrics)
+        api.networks.getNetworkNetworkHealthChannelUtilization.assert_not_called()
+        api.wireless.getNetworkWirelessDataRateHistory.assert_not_called()
+
     async def test_collect_non_wireless_networks_skipped(
         self, collector, mock_api_builder, metrics
     ):

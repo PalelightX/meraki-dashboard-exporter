@@ -316,6 +316,14 @@ class CollectorSettings(BaseModel):
             "When false, organization and network health alerts are still collected."
         ),
     )
+    networkhealth_enable_mr27_endpoints: bool = Field(
+        True,
+        description=(
+            "Enable MR27+ dependent NetworkHealth endpoints "
+            "(wireless data rate history and channel utilization). "
+            "Set to false to avoid 400 responses on incompatible networks."
+        ),
+    )
 
     @property
     def active_collectors(self) -> set[str]:

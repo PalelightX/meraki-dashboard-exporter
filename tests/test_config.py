@@ -65,3 +65,12 @@ def test_settings_with_alert_sensor_collection_disabled(monkeypatch):
 
     settings = Settings()
     assert settings.collectors.alerts_enable_sensor_alerts is False
+
+
+def test_settings_with_networkhealth_mr27_endpoints_disabled(monkeypatch):
+    """Test collector sub-feature flag parsing for MR27-dependent networkhealth endpoints."""
+    monkeypatch.setenv("MERAKI_EXPORTER_MERAKI__API_KEY", "a" * 40)
+    monkeypatch.setenv("MERAKI_EXPORTER_COLLECTORS__NETWORKHEALTH_ENABLE_MR27_ENDPOINTS", "false")
+
+    settings = Settings()
+    assert settings.collectors.networkhealth_enable_mr27_endpoints is False
