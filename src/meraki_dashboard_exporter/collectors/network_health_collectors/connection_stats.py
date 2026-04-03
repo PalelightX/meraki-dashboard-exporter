@@ -64,7 +64,15 @@ class ConnectionStatsCollector(BaseNetworkHealthCollector):
         try:
             with LogContext(network_id=network_id, network_name=network_name, org_id=org_id):
                 # Use 30 minute (1800 second) timespan as minimum
-                connection_stats = await self._fetch_connection_stats(network_id, org_id=org_id)
+                connection_stats = await self._execute_with_rate_limit_guard(
+                    endpoint="getNetworkWirelessConnectionStats",
+                    org_id=org_id,
+                    network_id=network_id,
+                    api_call=lambda: self._fetch_connection_stats(network_id, org_id=org_id),
+                )
+
+            if connection_stats is None:
+                return
 
             # Parse response using domain model
             if not connection_stats:

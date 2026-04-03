@@ -60,7 +60,12 @@ class BluetoothCollector(BaseNetworkHealthCollector):
         try:
             with LogContext(network_id=network_id, network_name=network_name, org_id=org_id):
                 # Get Bluetooth clients for the last 5 minutes with page size 1000
-                bluetooth_clients = await self._fetch_bluetooth_clients(network_id)
+                bluetooth_clients = await self._execute_with_rate_limit_guard(
+                    endpoint="getNetworkBluetoothClients",
+                    org_id=org_id,
+                    network_id=network_id,
+                    api_call=lambda: self._fetch_bluetooth_clients(network_id),
+                )
 
             # Count the total number of Bluetooth clients
             client_count = len(bluetooth_clients) if bluetooth_clients else 0

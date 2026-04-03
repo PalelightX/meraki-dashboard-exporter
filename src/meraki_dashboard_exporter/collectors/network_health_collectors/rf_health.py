@@ -107,7 +107,15 @@ class RFHealthCollector(BaseNetworkHealthCollector):
                         and d.get("networkId") == network_id
                     }
 
-                channel_util = await self._fetch_channel_utilization(network_id)
+                channel_util = await self._execute_with_rate_limit_guard(
+                    endpoint="getNetworkNetworkHealthChannelUtilization",
+                    org_id=org_id,
+                    network_id=network_id,
+                    api_call=lambda: self._fetch_channel_utilization(network_id),
+                )
+
+            if channel_util is None:
+                return
 
             if channel_util:
                 # Track network-wide averages

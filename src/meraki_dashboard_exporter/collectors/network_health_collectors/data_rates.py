@@ -60,7 +60,12 @@ class DataRatesCollector(BaseNetworkHealthCollector):
             with LogContext(network_id=network_id, network_name=network_name, org_id=org_id):
                 # Use 300 second (5 minute) resolution with recent timespan
                 # Using timespan of 300 seconds to get the most recent 5-minute data block
-                data_rate_history = await self._fetch_data_rate_history(network_id)
+                data_rate_history = await self._execute_with_rate_limit_guard(
+                    endpoint="getNetworkWirelessDataRateHistory",
+                    org_id=org_id,
+                    network_id=network_id,
+                    api_call=lambda: self._fetch_data_rate_history(network_id),
+                )
 
             # Handle empty response
             if not data_rate_history:
