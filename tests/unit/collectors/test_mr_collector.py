@@ -31,6 +31,7 @@ class TestMRCollector:
         parent = MagicMock()
         parent.api = mock_api
         parent.settings = MagicMock()
+        parent.rate_limiter = None
 
         # Create actual gauges for metrics
         gauges = {}
@@ -242,6 +243,39 @@ class TestMRCollector:
 
         # Verify API call
         mock_api.organizations.getOrganizationSummaryTopSsidsByUsage.assert_called_once_with(org_id)
+
+    async def test_collect_ssid_usage_reuses_ssid_network_cache(
+        self,
+        mr_collector: MRCollector,
+        mock_api: MagicMock,
+    ) -> None:
+        """Test SSID-to-network mapping is cached between runs."""
+        org_id = "123"
+        org_name = "Test Org"
+
+        mock_api.organizations.getOrganizationSummaryTopSsidsByUsage = MagicMock(
+            return_value=[
+                {
+                    "name": "Guest WiFi",
+                    "usage": {"total": 100, "downstream": 60, "upstream": 40, "percentage": 10},
+                    "clients": {"counts": {"total": 5}},
+                }
+            ]
+        )
+        mock_api.organizations.getOrganizationNetworks = MagicMock(
+            return_value=[{"id": "N_1", "name": "Net 1", "productTypes": ["wireless"]}]
+        )
+        mock_api.wireless.getNetworkWirelessSsids = MagicMock(
+            return_value=[{"name": "Guest WiFi"}]
+        )
+
+        await mr_collector.collect_ssid_usage(org_id, org_name)
+        await mr_collector.collect_ssid_usage(org_id, org_name)
+
+        # SSID usage endpoint is called each run, mapping endpoints should be cached.
+        assert mock_api.organizations.getOrganizationSummaryTopSsidsByUsage.call_count == 2
+        mock_api.organizations.getOrganizationNetworks.assert_called_once_with(org_id)
+        mock_api.wireless.getNetworkWirelessSsids.assert_called_once_with("N_1")
 
     async def test_collect_ethernet_status_power_modes(
         self,

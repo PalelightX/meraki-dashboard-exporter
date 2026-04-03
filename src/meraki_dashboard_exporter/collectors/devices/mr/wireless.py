@@ -10,7 +10,8 @@ Pattern established in Phase 3.1 following Phase 3.2 metric expiration integrati
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Any
 
 from ....core.constants import MRMetricName
 from ....core.error_handling import ErrorCategory, validate_response_format, with_error_handling
@@ -41,6 +42,8 @@ class MRWirelessCollector:
         self.parent = parent
         self.api = parent.api
         self.settings = parent.settings
+        self._ssid_network_cache: dict[str, tuple[float, dict[str, list[dict[str, str]]]]] = {}
+        self._ssid_network_cache_lock = asyncio.Lock()
         self._initialize_metrics()
 
     def _initialize_metrics(self) -> None:
@@ -292,6 +295,27 @@ class MRWirelessCollector:
             Mapping of SSID names to list of networks with that SSID.
 
         """
+        medium_interval = 600
+        try:
+            configured_medium = getattr(self.settings.update_intervals, "medium", 600)
+            if isinstance(configured_medium, (int, float)) and configured_medium > 0:
+                medium_interval = int(configured_medium)
+        except Exception:
+            medium_interval = 600
+
+        cache_ttl_seconds = max(medium_interval * 3, 900)
+        now = time.monotonic()
+        async with self._ssid_network_cache_lock:
+            cached = self._ssid_network_cache.get(org_id)
+            if cached and now - cached[0] < cache_ttl_seconds:
+                logger.debug(
+                    "Using cached SSID-to-network mapping",
+                    org_id=org_id,
+                    age_seconds=round(now - cached[0], 2),
+                    ttl_seconds=cache_ttl_seconds,
+                )
+                return cached[1]
+
         ssid_to_networks: dict[str, list[dict[str, str]]] = {}
 
         try:
@@ -332,6 +356,9 @@ class MRWirelessCollector:
                         network_id=network_id,
                     )
                     continue
+
+            async with self._ssid_network_cache_lock:
+                self._ssid_network_cache[org_id] = (time.monotonic(), ssid_to_networks)
 
             return ssid_to_networks
 

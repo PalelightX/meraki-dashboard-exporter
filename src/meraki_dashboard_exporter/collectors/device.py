@@ -594,7 +594,12 @@ class DeviceCollector(MetricCollector):
 
             # Aggregate network-wide POE metrics after all switches are collected
             try:
-                await self._aggregate_network_poe(org_id, org_name, devices)
+                await self._aggregate_network_poe(
+                    org_id,
+                    org_name,
+                    devices,
+                    network_map=network_map,
+                )
             except Exception:
                 logger.exception("Failed to aggregate POE metrics")
 
@@ -865,6 +870,9 @@ class DeviceCollector(MetricCollector):
             List of networks.
 
         """
+        if self.inventory:
+            return await self.inventory.get_networks(org_id)
+
         with LogContext(org_id=org_id):
             networks = await asyncio.to_thread(
                 self.api.organizations.getOrganizationNetworks,
@@ -874,7 +882,11 @@ class DeviceCollector(MetricCollector):
             return cast(list[dict[str, Any]], networks)
 
     async def _aggregate_network_poe(
-        self, org_id: str, org_name: str, devices: list[dict[str, Any]]
+        self,
+        org_id: str,
+        org_name: str,
+        devices: list[dict[str, Any]],
+        network_map: dict[str, str] | None = None,
     ) -> None:
         """Aggregate POE metrics at the network level.
 
@@ -890,8 +902,9 @@ class DeviceCollector(MetricCollector):
         """
         try:
             # Get network names
-            networks = await self._fetch_networks_for_poe(org_id)
-            network_map = {n["id"]: n["name"] for n in networks}
+            if network_map is None:
+                networks = await self._fetch_networks_for_poe(org_id)
+                network_map = {n["id"]: n["name"] for n in networks}
 
             # Group switches by network
             network_switches: dict[str, list[str]] = {}
