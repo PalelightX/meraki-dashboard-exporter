@@ -46,8 +46,8 @@ Some metrics are conditional (clients or webhooks); notes are shown where releva
 | `meraki_exporter_client_store_networks` | gauge | — | Total number of networks with clients | Requires MERAKI_EXPORTER_CLIENTS__ENABLED=true |
 | `meraki_exporter_client_store_total` | gauge | — | Total number of clients in the store | Requires MERAKI_EXPORTER_CLIENTS__ENABLED=true |
 | `meraki_wireless_client_capabilities_count` | gauge | `org_id`, `org_name`, `network_id`, `network_name`, `type` | Count of wireless clients by capability | Requires MERAKI_EXPORTER_CLIENTS__ENABLED=true |
-| `meraki_wireless_client_rssi` | gauge | `org_id`, `org_name`, `network_id`, `network_name`, `client_id`, `mac`, `description`, `hostname`, `ssid` | Wireless client RSSI (Received Signal Strength Indicator) in dBm | Requires MERAKI_EXPORTER_CLIENTS__ENABLED=true |
-| `meraki_wireless_client_snr` | gauge | `org_id`, `org_name`, `network_id`, `network_name`, `client_id`, `mac`, `description`, `hostname`, `ssid` | Wireless client SNR (Signal-to-Noise Ratio) in dB | Requires MERAKI_EXPORTER_CLIENTS__ENABLED=true |
+| `meraki_wireless_client_rssi` | gauge | `org_id`, `org_name`, `network_id`, `network_name`, `client_id`, `mac`, `description`, `hostname`, `ssid`, `ap_serial`, `ap_name`, `ap_mac` | Wireless client RSSI (Received Signal Strength Indicator) in dBm | Requires MERAKI_EXPORTER_CLIENTS__ENABLED=true |
+| `meraki_wireless_client_snr` | gauge | `org_id`, `org_name`, `network_id`, `network_name`, `client_id`, `mac`, `description`, `hostname`, `ssid`, `ap_serial`, `ap_name`, `ap_mac` | Wireless client SNR (Signal-to-Noise Ratio) in dB | Requires MERAKI_EXPORTER_CLIENTS__ENABLED=true |
 
 ### ConfigCollector
 

@@ -288,6 +288,9 @@ class ClientsCollector(MetricCollector):
                 LabelName.DESCRIPTION,
                 LabelName.HOSTNAME,
                 LabelName.SSID,
+                LabelName.AP_SERIAL,
+                LabelName.AP_NAME,
+                LabelName.AP_MAC,
             ],
         )
 
@@ -304,6 +307,9 @@ class ClientsCollector(MetricCollector):
                 LabelName.DESCRIPTION,
                 LabelName.HOSTNAME,
                 LabelName.SSID,
+                LabelName.AP_SERIAL,
+                LabelName.AP_NAME,
+                LabelName.AP_MAC,
             ],
         )
 
@@ -570,6 +576,14 @@ class ClientsCollector(MetricCollector):
         result = result.strip("_")
 
         return result if result else "unknown"
+
+    def _create_recent_ap_labels(self, client: NetworkClient) -> dict[str, str]:
+        """Create labels for the client's most recent AP association."""
+        return {
+            LabelName.AP_SERIAL.value: client.recentDeviceSerial or "",
+            LabelName.AP_NAME.value: self._sanitize_label_value(client.recentDeviceName),
+            LabelName.AP_MAC.value: client.recentDeviceMac or "",
+        }
 
     def _sanitize_application_name(self, app_name: str | None) -> str:
         """Sanitize application name for use as a metric label.
@@ -1088,6 +1102,7 @@ class ClientsCollector(MetricCollector):
                     network_id=network_id,
                     network_name=network_name,
                     ssid=client.ssid or "Unknown",
+                    **self._create_recent_ap_labels(client),
                 )
 
                 # Set metrics

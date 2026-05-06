@@ -30,6 +30,9 @@ class LabelName(StrEnum):
     NAME = "name"  # Device name
     MODEL = "model"
     DEVICE_TYPE = "device_type"
+    AP_SERIAL = "ap_serial"
+    AP_NAME = "ap_name"
+    AP_MAC = "ap_mac"
 
     # Port/Interface labels
     PORT_ID = "port_id"

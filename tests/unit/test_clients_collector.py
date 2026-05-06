@@ -325,12 +325,18 @@ class TestClientsCollector(BaseCollectorTest):
                 mac="aa:bb:cc:dd:ee:01",
                 recentDeviceConnection="Wireless",
                 ssid="Corporate",
+                recentDeviceSerial="Q2AP-AAAA-BBBB",
+                recentDeviceName="Office AP 01",
+                recentDeviceMac="00:11:22:33:44:55",
             ),
             ClientFactory.create(
                 client_id="c2",
                 mac="aa:bb:cc:dd:ee:02",
                 recentDeviceConnection="Wireless",
                 ssid="Guest",
+                recentDeviceSerial="Q2AP-CCCC-DDDD",
+                recentDeviceName="Guest AP 01",
+                recentDeviceMac="66:77:88:99:AA:BB",
             ),
             ClientFactory.create(
                 client_id="c3",
@@ -389,14 +395,42 @@ class TestClientsCollector(BaseCollectorTest):
 
         # Verify wireless signal quality metrics
         metrics.assert_gauge_value(
-            "meraki_wireless_client_rssi", -47, client_id="c1", ssid="Corporate"
+            "meraki_wireless_client_rssi",
+            -47,
+            client_id="c1",
+            ssid="Corporate",
+            ap_serial="Q2AP-AAAA-BBBB",
+            ap_name="Office AP 01",
+            ap_mac="00:11:22:33:44:55",
         )
         metrics.assert_gauge_value(
-            "meraki_wireless_client_snr", 50, client_id="c1", ssid="Corporate"
+            "meraki_wireless_client_snr",
+            50,
+            client_id="c1",
+            ssid="Corporate",
+            ap_serial="Q2AP-AAAA-BBBB",
+            ap_name="Office AP 01",
+            ap_mac="00:11:22:33:44:55",
         )
 
-        metrics.assert_gauge_value("meraki_wireless_client_rssi", -62, client_id="c2", ssid="Guest")
-        metrics.assert_gauge_value("meraki_wireless_client_snr", 35, client_id="c2", ssid="Guest")
+        metrics.assert_gauge_value(
+            "meraki_wireless_client_rssi",
+            -62,
+            client_id="c2",
+            ssid="Guest",
+            ap_serial="Q2AP-CCCC-DDDD",
+            ap_name="Guest AP 01",
+            ap_mac="66:77:88:99:AA:BB",
+        )
+        metrics.assert_gauge_value(
+            "meraki_wireless_client_snr",
+            35,
+            client_id="c2",
+            ssid="Guest",
+            ap_serial="Q2AP-CCCC-DDDD",
+            ap_name="Guest AP 01",
+            ap_mac="66:77:88:99:AA:BB",
+        )
 
         # Verify API was called with correct parameters
         api.wireless.getNetworkWirelessSignalQualityHistory.assert_any_call(
@@ -408,6 +442,67 @@ class TestClientsCollector(BaseCollectorTest):
 
         # Verify wired client was skipped (should have 2 calls, not 3)
         assert api.wireless.getNetworkWirelessSignalQualityHistory.call_count == 2
+
+    async def test_collect_wireless_signal_quality_with_missing_recent_ap_info(
+        self, collector, mock_api_builder, metrics
+    ):
+        """Test signal quality collection when recent AP fields are missing."""
+        org = OrganizationFactory.create(org_id="123", name="Test Org")
+        network = NetworkFactory.create(network_id="N_123", name="Test Network", org_id=org["id"])
+
+        clients = [
+            ClientFactory.create(
+                client_id="c1",
+                mac="aa:bb:cc:dd:ee:01",
+                recentDeviceConnection="Wireless",
+                ssid="Corporate",
+                recentDeviceSerial=None,
+                recentDeviceName=None,
+                recentDeviceMac=None,
+            )
+        ]
+
+        api = (
+            mock_api_builder
+            .with_organizations([org])
+            .with_networks([network], org_id=org["id"])
+            .with_custom_response("getNetworkClients", clients)
+            .build()
+        )
+        api.wireless.getNetworkWirelessSignalQualityHistory = MagicMock(
+            return_value=[
+                {
+                    "startTs": "2025-07-21T17:25:00Z",
+                    "endTs": "2025-07-21T17:30:00Z",
+                    "snr": 22,
+                    "rssi": -70,
+                }
+            ]
+        )
+        self._update_collector_api(collector, api)
+
+        with patch.object(collector.dns_resolver, "resolve_multiple") as mock_resolve:
+            mock_resolve.return_value = {}
+            await self.run_collector(collector)
+
+        metrics.assert_gauge_value(
+            "meraki_wireless_client_rssi",
+            -70,
+            client_id="c1",
+            ssid="Corporate",
+            ap_serial="",
+            ap_name="",
+            ap_mac="",
+        )
+        metrics.assert_gauge_value(
+            "meraki_wireless_client_snr",
+            22,
+            client_id="c1",
+            ssid="Corporate",
+            ap_serial="",
+            ap_name="",
+            ap_mac="",
+        )
 
     async def test_application_name_sanitization(self, collector):
         """Test sanitization of various application names."""
