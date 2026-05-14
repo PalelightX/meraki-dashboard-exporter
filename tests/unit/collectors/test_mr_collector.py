@@ -417,3 +417,39 @@ class TestMRCollector:
         mock_api.wireless.getOrganizationWirelessDevicesEthernetStatuses.assert_called_once_with(
             org_id
         )
+
+    async def test_collect_ethernet_status_reads_device_aggregation_speed(
+        self,
+        mr_collector: MRCollector,
+        mock_api: MagicMock,
+        mock_parent: MagicMock,
+    ) -> None:
+        """Test aggregation speed is read from device-level aggregation data."""
+        org_id = "123"
+        device_lookup = {
+            "Q123": {"serial": "Q123", "name": "AP1", "model": "MR46"},
+        }
+
+        mock_api.wireless.getOrganizationWirelessDevicesEthernetStatuses = MagicMock(
+            return_value=[
+                {
+                    "serial": "Q123",
+                    "name": "AP1",
+                    "network": {"id": "net1", "name": "Network 1"},
+                    "power": {"ac": {"isConnected": False}, "poe": {"isConnected": True}},
+                    "aggregation": {"enabled": True, "speed": 2500},
+                    "ports": [],
+                }
+            ]
+        )
+
+        await mr_collector.collect_ethernet_status(org_id, "Test Org", device_lookup)
+
+        speed_calls = [
+            call
+            for call in mock_parent._set_metric.call_args_list
+            if call.args[0]._name == "meraki_mr_aggregation_speed_mbps"
+        ]
+        assert len(speed_calls) == 1
+        assert speed_calls[0].args[1]["serial"] == "Q123"
+        assert speed_calls[0].args[2] == 2500

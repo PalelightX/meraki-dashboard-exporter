@@ -475,6 +475,9 @@ class MRPerformanceCollector:
                 device_count=len(ethernet_data) if ethernet_data else 0,
             )
 
+            aggregation_speed_count = 0
+            device_aggregation_count = 0
+
             # Process each device's ethernet status
             for device_status in ethernet_data:
                 serial = device_status.get("serial", "")
@@ -525,7 +528,11 @@ class MRPerformanceCollector:
 
                 # Process port information
                 ports = device_status.get("ports", [])
-                aggregation_enabled = False
+                aggregation = device_status.get("aggregation", {})
+                aggregation_enabled = bool(aggregation.get("enabled"))
+                aggregation_speed = aggregation.get("speed")
+                if aggregation:
+                    device_aggregation_count += 1
                 total_speed = 0
 
                 for port in ports:
@@ -591,12 +598,24 @@ class MRPerformanceCollector:
                     1 if aggregation_enabled else 0,
                 )
 
-                if aggregation_enabled and total_speed > 0:
+                speed_value = aggregation_speed
+                if speed_value is None and aggregation_enabled and total_speed > 0:
+                    speed_value = total_speed
+
+                if aggregation_enabled and speed_value is not None:
                     self.parent._set_metric(
                         self._mr_aggregation_speed,
                         device_labels,
-                        total_speed,
+                        speed_value,
                     )
+                    aggregation_speed_count += 1
+
+            logger.debug(
+                "Processed MR ethernet aggregation data",
+                org_id=org_id,
+                device_aggregation_count=device_aggregation_count,
+                aggregation_speed_count=aggregation_speed_count,
+            )
 
         except Exception:
             logger.exception(
