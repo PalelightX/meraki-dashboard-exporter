@@ -27,6 +27,18 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _response_summary(response: Any) -> dict[str, Any]:
+    """Build a safe API response summary without logging values."""
+    data = response.get("items") if isinstance(response, dict) and "items" in response else response
+    first_item = data[0] if isinstance(data, list) and data else None
+    return {
+        "response_type": type(response).__name__,
+        "wrapped_items": isinstance(response, dict) and "items" in response,
+        "item_count": len(data) if isinstance(data, list) else None,
+        "first_keys": list(first_item.keys()) if isinstance(first_item, dict) else [],
+    }
+
+
 class MRPerformanceCollector:
     """Collector for MR wireless performance metrics."""
 
@@ -473,10 +485,14 @@ class MRPerformanceCollector:
                 "Successfully fetched MR ethernet status",
                 org_id=org_id,
                 device_count=len(ethernet_data) if ethernet_data else 0,
+                first_keys=list(ethernet_data[0].keys()) if ethernet_data else [],
             )
 
             aggregation_speed_count = 0
             device_aggregation_count = 0
+            port_aggregation_count = 0
+            aggregation_enabled_count = 0
+            aggregation_missing_speed_count = 0
 
             # Process each device's ethernet status
             for device_status in ethernet_data:
@@ -588,8 +604,12 @@ class MRPerformanceCollector:
                     # Track aggregation
                     if port.get("aggregation", {}).get("enabled"):
                         aggregation_enabled = True
+                        port_aggregation_count += 1
                     if speed:
                         total_speed += speed
+
+                if aggregation_enabled:
+                    aggregation_enabled_count += 1
 
                 # Aggregation metrics - using P3.2 pattern
                 self.parent._set_metric(
@@ -609,12 +629,17 @@ class MRPerformanceCollector:
                         speed_value,
                     )
                     aggregation_speed_count += 1
+                elif aggregation_enabled:
+                    aggregation_missing_speed_count += 1
 
             logger.debug(
                 "Processed MR ethernet aggregation data",
                 org_id=org_id,
                 device_aggregation_count=device_aggregation_count,
+                port_aggregation_count=port_aggregation_count,
+                aggregation_enabled_count=aggregation_enabled_count,
                 aggregation_speed_count=aggregation_speed_count,
+                aggregation_missing_speed_count=aggregation_missing_speed_count,
             )
 
         except Exception:
@@ -893,18 +918,34 @@ class MRPerformanceCollector:
             Packet loss data or None if unavailable.
 
         """
+        endpoint = "getOrganizationWirelessDevicesPacketLossByNetwork"
+        if not hasattr(self.api.wireless, endpoint):
+            logger.warning(
+                "Meraki SDK wireless method is missing",
+                org_id=org_id,
+                endpoint=endpoint,
+            )
+            return None
+
         try:
             with LogContext(org_id=org_id):
+                method = getattr(self.api.wireless, endpoint)
                 packet_loss = await asyncio.to_thread(
-                    self.api.wireless.getOrganizationWirelessDevicesPacketLossByNetwork,
+                    method,
                     org_id,
                     total_pages="all",
                     timespan=300,  # 5 minutes
                 )
+                logger.debug(
+                    "Fetched raw MR network packet loss response",
+                    org_id=org_id,
+                    endpoint=endpoint,
+                    **_response_summary(packet_loss),
+                )
                 packet_loss = validate_response_format(
                     packet_loss,
                     expected_type=list,
-                    operation="getOrganizationWirelessDevicesPacketLossByNetwork",
+                    operation=endpoint,
                 )
                 return packet_loss
         except Exception:
@@ -916,18 +957,34 @@ class MRPerformanceCollector:
 
     async def _fetch_device_packet_loss(self, org_id: str) -> Any:
         """Fetch AP-level packet loss data."""
+        endpoint = "getOrganizationWirelessDevicesPacketLossByDevice"
+        if not hasattr(self.api.wireless, endpoint):
+            logger.warning(
+                "Meraki SDK wireless method is missing",
+                org_id=org_id,
+                endpoint=endpoint,
+            )
+            return None
+
         try:
             with LogContext(org_id=org_id):
+                method = getattr(self.api.wireless, endpoint)
                 packet_loss = await asyncio.to_thread(
-                    self.api.wireless.getOrganizationWirelessDevicesPacketLossByDevice,
+                    method,
                     org_id,
                     total_pages="all",
                     timespan=300,  # 5 minutes
                 )
+                logger.debug(
+                    "Fetched raw MR device packet loss response",
+                    org_id=org_id,
+                    endpoint=endpoint,
+                    **_response_summary(packet_loss),
+                )
                 packet_loss = validate_response_format(
                     packet_loss,
                     expected_type=list,
-                    operation="getOrganizationWirelessDevicesPacketLossByDevice",
+                    operation=endpoint,
                 )
                 return packet_loss
         except Exception:
@@ -1025,41 +1082,58 @@ class MRPerformanceCollector:
 
         try:
             with LogContext(org_id=org_id):
+                endpoint = "getOrganizationWirelessDevicesSystemCpuLoadHistory"
+                if not hasattr(self.api.wireless, endpoint):
+                    logger.warning(
+                        "Meraki SDK wireless method is missing",
+                        org_id=org_id,
+                        endpoint=endpoint,
+                    )
+                    return []
+                method = getattr(self.api.wireless, endpoint)
                 cpu_data_raw = await asyncio.to_thread(
-                    self.api.wireless.getOrganizationWirelessDevicesSystemCpuLoadHistory,
+                    method,
                     org_id,
                     serials=serials,
                     timespan=300,  # 5 minutes
+                )
+                logger.debug(
+                    "Fetched raw MR CPU load response",
+                    org_id=org_id,
+                    endpoint=endpoint,
+                    **_response_summary(cpu_data_raw),
                 )
                 cpu_data = cast(
                     list[dict[str, Any]],
                     validate_response_format(
                         cpu_data_raw,
                         expected_type=list,
-                        operation="getOrganizationWirelessDevicesSystemCpuLoadHistory",
+                        operation=endpoint,
                     ),
                 )
 
             emitted_count = 0
-            skipped_count = 0
+            missing_serial_count = 0
+            unknown_device_count = 0
+            missing_cpu_value_count = 0
 
             # Process CPU data for each device
             for item in cpu_data:
                 serial = self._extract_cpu_serial(item)
                 if not serial:
-                    skipped_count += 1
+                    missing_serial_count += 1
                     continue
 
                 # Find device info
                 device = next((d for d in devices if d.get("serial") == serial), None)
                 if not device:
-                    skipped_count += 1
+                    unknown_device_count += 1
                     continue
 
                 # Extract CPU data
                 cpu_value = self._extract_cpu_data(item)
                 if cpu_value is None:
-                    skipped_count += 1
+                    missing_cpu_value_count += 1
                     continue
 
                 # Process device CPU data
@@ -1072,7 +1146,9 @@ class MRPerformanceCollector:
                 serial_count=len(serials),
                 response_count=len(cpu_data),
                 metric_count=emitted_count,
-                skipped_count=skipped_count,
+                missing_serial_count=missing_serial_count,
+                unknown_device_count=unknown_device_count,
+                missing_cpu_value_count=missing_cpu_value_count,
             )
 
             return cpu_data
