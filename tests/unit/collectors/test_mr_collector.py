@@ -208,6 +208,59 @@ class TestMRCollector:
         # Verify network-level API calls (one per wireless network)
         assert mock_api.wireless.getNetworkWirelessDevicesConnectionStats.call_count == 2
 
+    async def test_collect_packet_loss_uses_by_device_for_ap_metrics(
+        self,
+        mr_collector: MRCollector,
+        mock_api: MagicMock,
+        mock_parent: MagicMock,
+    ) -> None:
+        """Test AP packet loss metrics are collected from the byDevice endpoint."""
+        org_id = "123"
+        org_name = "Test Org"
+        device_lookup = {
+            "Q123": {
+                "serial": "Q123",
+                "name": "AP1",
+                "model": "MR46",
+                "networkId": "net1",
+                "networkName": "Network 1",
+            }
+        }
+
+        mock_api.wireless.getOrganizationWirelessDevicesPacketLossByNetwork = MagicMock(
+            return_value=[]
+        )
+        mock_api.wireless.getOrganizationWirelessDevicesPacketLossByDevice = MagicMock(
+            return_value=[
+                {
+                    "network": {"id": "net1", "name": "Network 1"},
+                    "device": {"serial": "Q123", "name": "AP1", "mac": "00:11:22:33:44:55"},
+                    "downstream": {"total": 1000, "lost": 10, "lossPercentage": 1.0},
+                    "upstream": {"total": 500, "lost": 5, "lossPercentage": 1.0},
+                }
+            ]
+        )
+
+        await mr_collector.collect_packet_loss(org_id, org_name, device_lookup)
+
+        mock_api.wireless.getOrganizationWirelessDevicesPacketLossByNetwork.assert_called_once_with(
+            org_id, total_pages="all", timespan=300
+        )
+        mock_api.wireless.getOrganizationWirelessDevicesPacketLossByDevice.assert_called_once_with(
+            org_id, total_pages="all", timespan=300
+        )
+
+        total_loss_calls = [
+            call
+            for call in mock_parent._set_metric.call_args_list
+            if call.args[0]._name == "meraki_mr_packet_loss_total_percent"
+        ]
+        assert len(total_loss_calls) == 1
+        labels = total_loss_calls[0].args[1]
+        assert labels["serial"] == "Q123"
+        assert labels["network_id"] == "net1"
+        assert total_loss_calls[0].args[2] == 1.0
+
     async def test_collect_ssid_usage(
         self,
         mr_collector: MRCollector,
