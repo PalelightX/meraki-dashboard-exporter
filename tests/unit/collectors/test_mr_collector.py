@@ -261,6 +261,55 @@ class TestMRCollector:
         assert labels["network_id"] == "net1"
         assert total_loss_calls[0].args[2] == 1.0
 
+    async def test_collect_cpu_load_reads_items_series_cpu_load5(
+        self,
+        mr_collector: MRCollector,
+        mock_api: MagicMock,
+        mock_parent: MagicMock,
+    ) -> None:
+        """Test CPU load collection handles the documented items/series shape."""
+        org_id = "123"
+        org_name = "Test Org"
+        mock_parent.settings.api.batch_size = 100
+        devices = [
+            {
+                "serial": "Q123",
+                "name": "AP1",
+                "model": "MR46",
+                "networkId": "net1",
+                "networkName": "Network 1",
+            }
+        ]
+
+        mock_api.wireless.getOrganizationWirelessDevicesSystemCpuLoadHistory = MagicMock(
+            return_value={
+                "items": [
+                    {
+                        "device": {"serial": "Q123", "name": "AP1"},
+                        "series": [
+                            {"ts": "2026-05-14T00:00:00Z", "cpuLoad5": 0},
+                            {"ts": "2026-05-14T00:05:00Z", "cpuLoad5": 12.5},
+                        ],
+                    }
+                ]
+            }
+        )
+
+        await mr_collector.collect_cpu_load(org_id, org_name, devices)
+
+        mock_api.wireless.getOrganizationWirelessDevicesSystemCpuLoadHistory.assert_called_once_with(
+            org_id,
+            serials=["Q123"],
+            timespan=300,
+        )
+        cpu_calls = [
+            call for call in mock_parent._set_metric.call_args_list
+            if call.args[0]._name == "meraki_mr_cpu_load_5min"
+        ]
+        assert len(cpu_calls) == 1
+        assert cpu_calls[0].args[1]["serial"] == "Q123"
+        assert cpu_calls[0].args[2] == 12.5
+
     async def test_collect_ssid_usage(
         self,
         mr_collector: MRCollector,

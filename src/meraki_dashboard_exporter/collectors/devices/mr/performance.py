@@ -1017,24 +1017,40 @@ class MRPerformanceCollector:
                     ),
                 )
 
+            emitted_count = 0
+            skipped_count = 0
+
             # Process CPU data for each device
             for item in cpu_data:
-                serial = item.get("serial")
+                serial = self._extract_cpu_serial(item)
                 if not serial:
+                    skipped_count += 1
                     continue
 
                 # Find device info
                 device = next((d for d in devices if d.get("serial") == serial), None)
                 if not device:
+                    skipped_count += 1
                     continue
 
                 # Extract CPU data
                 cpu_value = self._extract_cpu_data(item)
                 if cpu_value is None:
+                    skipped_count += 1
                     continue
 
                 # Process device CPU data
                 self._process_device_cpu_data(device, cpu_value, org_id, org_name)
+                emitted_count += 1
+
+            logger.debug(
+                "Processed MR CPU load batch",
+                org_id=org_id,
+                serial_count=len(serials),
+                response_count=len(cpu_data),
+                metric_count=emitted_count,
+                skipped_count=skipped_count,
+            )
 
             return cpu_data
 
@@ -1045,6 +1061,11 @@ class MRPerformanceCollector:
                 serial_count=len(serials),
             )
             return []
+
+    def _extract_cpu_serial(self, item: dict[str, Any]) -> str:
+        """Extract AP serial from current and documented CPU API shapes."""
+        device = item.get("device", {})
+        return str(item.get("serial") or device.get("serial", ""))
 
     def _extract_cpu_data(
         self,
@@ -1063,16 +1084,25 @@ class MRPerformanceCollector:
             CPU load percentage or None if unavailable.
 
         """
-        # Get the most recent CPU reading
+        series = item.get("series")
+        if isinstance(series, list) and series:
+            latest = series[-1]
+            cpu_load = latest.get("cpuLoad5")
+            if cpu_load is None:
+                cpu_load = latest.get("load")
+            if cpu_load is not None:
+                return float(cpu_load)
+
+        # Backward-compatible fallback for older or mocked response shapes.
         history = item.get("history", [])
-        if not history:
+        if not isinstance(history, list) or not history:
             return None
 
-        # Use the last (most recent) reading
         latest = history[-1]
         cpu_load = latest.get("load")
+        if cpu_load is None:
+            cpu_load = latest.get("cpuLoad5")
 
-        # Return as float or None
         if cpu_load is not None:
             return float(cpu_load)
         return None
