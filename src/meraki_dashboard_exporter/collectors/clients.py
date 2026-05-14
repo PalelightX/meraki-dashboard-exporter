@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from typing import Any
 
@@ -66,6 +67,18 @@ class ClientsCollector(MetricCollector):
         # Initialize DNS stats tracking
         self._last_dns_stats: dict[str, int] | None = None
         self._last_app_usage_by_network: dict[str, float] = {}
+        self._signal_quality_rotation_by_network: dict[str, int] = {}
+        self._signal_quality_network_rotation_index = 0
+        self._signal_quality_allowed_network_ids: set[str] | None = None
+        self._signal_quality_lock = asyncio.Lock()
+        self._signal_quality_previous_total_wireless_clients = 0
+        self._signal_quality_current_total_wireless_clients = 0
+        self._signal_quality_cycle_budget = 0
+        self._signal_quality_remaining_budget = 0
+        self._signal_quality_cycle_collected_count = 0
+        self._signal_quality_cycle_metric_count = 0
+        self._signal_quality_cycle_missing_data_count = 0
+        self._signal_quality_cycle_error_count = 0
 
     def _initialize_metrics(self) -> None:
         """Initialize Prometheus metrics for client data."""
@@ -324,6 +337,8 @@ class ClientsCollector(MetricCollector):
         if not organizations:
             return
 
+        await self._start_signal_quality_cycle()
+
         for org in organizations:
             org_id = org["id"]
             org_name = org["name"]
@@ -337,6 +352,8 @@ class ClientsCollector(MetricCollector):
             # Process networks directly without batching to avoid lambda issues
             # Since we're already processing one org at a time, this is fine
             await self._process_network_batch(org_id, org_name, networks)
+
+        await self._finish_signal_quality_cycle()
 
         # Update DNS cache and client store metrics after all collections
         self._update_cache_metrics()
@@ -362,6 +379,7 @@ class ClientsCollector(MetricCollector):
         if not networks:
             return
 
+        networks = self._prepare_signal_quality_network_rotation(networks)
         batch_size = self.settings.api.client_batch_size
         delay_between_batches = self.settings.api.batch_delay
 
@@ -492,7 +510,7 @@ class ClientsCollector(MetricCollector):
             org_id, org_name, network_id, network_name, clients, hostnames
         )
 
-        # Collect wireless signal quality data
+        # Collect wireless signal quality data within the per-cycle budget.
         await self._collect_wireless_signal_quality(
             org_id, org_name, network_id, network_name, clients, hostnames
         )
@@ -995,6 +1013,121 @@ class ClientsCollector(MetricCollector):
             client_count=len(client_ids),
         )
 
+    def _compute_signal_quality_cycle_budget(self, total_wireless_clients: int) -> int:
+        """Compute RSSI/SNR sample budget for the current collector cycle."""
+        if total_wireless_clients <= 0:
+            return 0
+
+        tier_interval = max(1, self._get_tier_interval())
+        target_interval = self.settings.clients.signal_quality_target_full_scan_interval
+        cycles_per_scan = max(1, math.ceil(target_interval / tier_interval))
+        target_per_cycle = math.ceil(total_wireless_clients / cycles_per_scan)
+        min_per_cycle = self.settings.clients.signal_quality_min_clients_per_cycle
+        max_per_cycle = self.settings.clients.signal_quality_max_clients_per_cycle
+        budget = max(target_per_cycle, min_per_cycle)
+        budget = min(budget, max_per_cycle, total_wireless_clients)
+        return max(0, budget)
+
+    def _prepare_signal_quality_network_rotation(self, networks: list[Any]) -> list[Any]:
+        """Rotate network order and select networks eligible for RSSI/SNR this cycle."""
+        if not self.settings.clients.signal_quality_enabled or not networks:
+            self._signal_quality_allowed_network_ids = None
+            return networks
+
+        ordered_networks = sorted(networks, key=lambda network: network.get("id", ""))
+        network_count = len(ordered_networks)
+        start_index = self._signal_quality_network_rotation_index % network_count
+        rotated_networks = ordered_networks[start_index:] + ordered_networks[:start_index]
+
+        per_network_limit = self.settings.clients.signal_quality_max_clients_per_network
+        network_slots = max(1, math.ceil(self._signal_quality_cycle_budget / per_network_limit))
+        network_slots = min(network_slots, network_count)
+        allowed_networks = rotated_networks[:network_slots]
+        self._signal_quality_allowed_network_ids = {
+            network["id"] for network in allowed_networks if network.get("id")
+        }
+        self._signal_quality_network_rotation_index = (start_index + network_slots) % network_count
+
+        logger.info(
+            "Prepared wireless signal quality network rotation",
+            network_count=network_count,
+            network_rotation_start_index=start_index,
+            network_rotation_next_index=self._signal_quality_network_rotation_index,
+            signal_quality_network_slots=network_slots,
+            signal_quality_cycle_budget=self._signal_quality_cycle_budget,
+        )
+        return rotated_networks
+
+    def _select_rotated_signal_quality_clients(
+        self,
+        network_id: str,
+        clients: list[NetworkClient],
+        limit: int,
+    ) -> tuple[list[NetworkClient], int, int]:
+        """Select clients using a per-network rotation cursor."""
+        if not clients or limit <= 0:
+            return [], 0, self._signal_quality_rotation_by_network.get(network_id, 0)
+
+        client_count = len(clients)
+        start_index = self._signal_quality_rotation_by_network.get(network_id, 0) % client_count
+        sample_count = min(limit, client_count)
+        selected = [
+            clients[(start_index + offset) % client_count] for offset in range(sample_count)
+        ]
+        next_index = (start_index + sample_count) % client_count
+        self._signal_quality_rotation_by_network[network_id] = next_index
+        return selected, start_index, next_index
+
+    async def _start_signal_quality_cycle(self) -> None:
+        """Initialize per-cycle RSSI/SNR API budget."""
+        if not self.settings.clients.signal_quality_enabled:
+            return
+
+        estimate = self._signal_quality_previous_total_wireless_clients
+        if estimate <= 0:
+            estimate = self.settings.clients.signal_quality_max_clients_per_cycle
+        cycle_budget = self._compute_signal_quality_cycle_budget(estimate)
+        async with self._signal_quality_lock:
+            self._signal_quality_current_total_wireless_clients = 0
+            self._signal_quality_cycle_budget = cycle_budget
+            self._signal_quality_remaining_budget = cycle_budget
+            self._signal_quality_cycle_collected_count = 0
+            self._signal_quality_cycle_metric_count = 0
+            self._signal_quality_cycle_missing_data_count = 0
+            self._signal_quality_cycle_error_count = 0
+
+        logger.info(
+            "Starting wireless signal quality rotation",
+            estimated_wireless_clients=estimate,
+            signal_quality_cycle_budget=cycle_budget,
+        )
+
+    async def _finish_signal_quality_cycle(self) -> None:
+        """Finalize per-cycle RSSI/SNR counters."""
+        if not self.settings.clients.signal_quality_enabled:
+            return
+
+        async with self._signal_quality_lock:
+            total_wireless_clients = self._signal_quality_current_total_wireless_clients
+            self._signal_quality_previous_total_wireless_clients = total_wireless_clients
+            cycle_budget = self._signal_quality_cycle_budget
+            remaining_budget = self._signal_quality_remaining_budget
+            collected_count = self._signal_quality_cycle_collected_count
+            metric_count = self._signal_quality_cycle_metric_count
+            missing_data_count = self._signal_quality_cycle_missing_data_count
+            error_count = self._signal_quality_cycle_error_count
+
+        logger.info(
+            "Completed wireless signal quality rotation",
+            total_wireless_clients=total_wireless_clients,
+            signal_quality_cycle_budget=cycle_budget,
+            signal_quality_remaining_budget=remaining_budget,
+            signal_quality_collected_count=collected_count,
+            signal_quality_metric_count=metric_count,
+            signal_quality_missing_data_count=missing_data_count,
+            signal_quality_error_count=error_count,
+        )
+
     @with_error_handling(
         operation="Collect wireless signal quality",
         continue_on_error=True,
@@ -1010,43 +1143,97 @@ class ClientsCollector(MetricCollector):
         clients: list[NetworkClient],
         hostnames: dict[str, str | None],
     ) -> None:
-        """Collect wireless signal quality data for clients.
+        """Collect wireless signal quality within the configured cycle budget."""
+        if not self.settings.clients.signal_quality_enabled:
+            return
 
-        Parameters
-        ----------
-        org_id : str
-            Organization ID.
-        org_name : str
-            Organization name.
-        network_id : str
-            Network ID.
-        network_name : str
-            Network name.
-        clients : list[NetworkClient]
-            List of clients.
-        hostnames : dict[str, str | None]
-            Resolved hostnames by IP.
-
-        """
-        # Filter to only wireless clients
         wireless_clients = [
             client for client in clients if client.recentDeviceConnection == "Wireless"
         ]
+        wireless_clients.sort(key=lambda client: client.id or client.mac or "")
 
         if not wireless_clients:
             logger.debug("No wireless clients found in network", network_id=network_id)
             return
 
-        logger.debug(
-            "Fetching wireless signal quality data",
+        async with self._signal_quality_lock:
+            self._signal_quality_current_total_wireless_clients += len(wireless_clients)
+            allowed_network_ids = self._signal_quality_allowed_network_ids
+            if allowed_network_ids is not None and network_id not in allowed_network_ids:
+                logger.info(
+                    "Skipping wireless signal quality collection for network this cycle",
+                    network_id=network_id,
+                    network_name=network_name,
+                    network_wireless_clients=len(wireless_clients),
+                    signal_quality_remaining_budget=self._signal_quality_remaining_budget,
+                )
+                return
+            network_limit = min(
+                self.settings.clients.signal_quality_max_clients_per_network,
+                self._signal_quality_remaining_budget,
+            )
+            selected_clients, rotation_start, rotation_next = (
+                self._select_rotated_signal_quality_clients(
+                    network_id,
+                    wireless_clients,
+                    network_limit,
+                )
+            )
+            self._signal_quality_remaining_budget -= len(selected_clients)
+            remaining_budget = self._signal_quality_remaining_budget
+
+        if not selected_clients:
+            logger.info(
+                "Skipping wireless signal quality collection because cycle budget is exhausted",
+                network_id=network_id,
+                network_name=network_name,
+                network_wireless_clients=len(wireless_clients),
+                signal_quality_remaining_budget=remaining_budget,
+            )
+            return
+
+        stats = await self._collect_wireless_signal_quality_for_clients(
+            org_id=org_id,
+            org_name=org_name,
             network_id=network_id,
-            wireless_client_count=len(wireless_clients),
+            network_name=network_name,
+            clients=selected_clients,
+            hostnames=hostnames,
+            network_wireless_clients=len(wireless_clients),
+            rotation_start_index=rotation_start,
+            rotation_next_index=rotation_next,
         )
 
-        # Process each wireless client individually
-        for client in wireless_clients:
+        async with self._signal_quality_lock:
+            self._signal_quality_cycle_collected_count += stats["collected_count"]
+            self._signal_quality_cycle_metric_count += stats["metric_count"]
+            self._signal_quality_cycle_missing_data_count += stats["missing_data_count"]
+            self._signal_quality_cycle_error_count += stats["error_count"]
+
+    async def _collect_wireless_signal_quality_for_clients(
+        self,
+        org_id: str,
+        org_name: str,
+        network_id: str,
+        network_name: str,
+        clients: list[NetworkClient],
+        hostnames: dict[str, str | None],
+        network_wireless_clients: int,
+        rotation_start_index: int,
+        rotation_next_index: int,
+    ) -> dict[str, int]:
+        """Collect wireless signal quality for selected clients."""
+        collected_count = 0
+        metric_count = 0
+        missing_data_count = 0
+        error_count = 0
+
+        for client in clients:
             try:
                 self._track_api_call("getNetworkWirelessSignalQualityHistory")
+                rate_limiter = getattr(self, "rate_limiter", None)
+                if rate_limiter is not None:
+                    await rate_limiter.acquire(org_id, "getNetworkWirelessSignalQualityHistory")
                 signal_data = await asyncio.to_thread(
                     self.api.wireless.getNetworkWirelessSignalQualityHistory,
                     network_id,
@@ -1054,8 +1241,10 @@ class ClientsCollector(MetricCollector):
                     timespan=300,  # 5 minutes as required
                     resolution=300,  # 5 minutes as required
                 )
+                collected_count += 1
 
                 if not signal_data:
+                    missing_data_count += 1
                     logger.debug(
                         "No signal quality data returned",
                         client_id=client.id,
@@ -1067,6 +1256,7 @@ class ClientsCollector(MetricCollector):
                 latest_data = signal_data[-1] if signal_data else None
 
                 if not latest_data:
+                    missing_data_count += 1
                     continue
 
                 # Extract signal quality values
@@ -1074,6 +1264,7 @@ class ClientsCollector(MetricCollector):
                 snr = latest_data.get("snr")
 
                 if rssi is None and snr is None:
+                    missing_data_count += 1
                     logger.debug(
                         "No RSSI or SNR data in response",
                         client_id=client.id,
@@ -1108,9 +1299,11 @@ class ClientsCollector(MetricCollector):
                 # Set metrics
                 if rssi is not None:
                     self.wireless_client_rssi.labels(**labels).set(float(rssi))
+                    metric_count += 1
 
                 if snr is not None:
                     self.wireless_client_snr.labels(**labels).set(float(snr))
+                    metric_count += 1
 
                 logger.debug(
                     "Set wireless signal quality metrics",
@@ -1121,6 +1314,7 @@ class ClientsCollector(MetricCollector):
                 )
 
             except Exception as e:
+                error_count += 1
                 logger.error(
                     "Failed to fetch signal quality for client",
                     client_id=client.id,
@@ -1134,8 +1328,22 @@ class ClientsCollector(MetricCollector):
         logger.info(
             "Completed wireless signal quality collection",
             network_id=network_id,
-            wireless_client_count=len(wireless_clients),
+            network_name=network_name,
+            network_wireless_clients=network_wireless_clients,
+            network_signal_quality_limit=len(clients),
+            signal_quality_collected_count=collected_count,
+            signal_quality_metric_count=metric_count,
+            signal_quality_missing_data_count=missing_data_count,
+            signal_quality_error_count=error_count,
+            rotation_start_index=rotation_start_index,
+            rotation_next_index=rotation_next_index,
         )
+        return {
+            "collected_count": collected_count,
+            "metric_count": metric_count,
+            "missing_data_count": missing_data_count,
+            "error_count": error_count,
+        }
 
     def _update_cache_metrics(self) -> None:
         """Update DNS cache and client store metrics."""

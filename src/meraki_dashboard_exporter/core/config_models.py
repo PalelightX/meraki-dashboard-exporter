@@ -366,6 +366,44 @@ class ClientSettings(BaseModel):
         le=50000,
         description="Maximum clients to track per network",
     )
+    signal_quality_enabled: bool = Field(
+        True,
+        description="Enable wireless client RSSI/SNR collection",
+    )
+    signal_quality_target_full_scan_interval: int = Field(
+        21600,
+        ge=600,
+        le=86400,
+        description="Target seconds to rotate through all wireless clients for RSSI/SNR",
+    )
+    signal_quality_min_clients_per_cycle: int = Field(
+        100,
+        ge=0,
+        le=10000,
+        description="Minimum wireless clients to sample per collector cycle",
+    )
+    signal_quality_max_clients_per_cycle: int = Field(
+        300,
+        ge=1,
+        le=50000,
+        description="Maximum wireless clients to sample per collector cycle",
+    )
+    signal_quality_max_clients_per_network: int = Field(
+        50,
+        ge=1,
+        le=10000,
+        description="Maximum wireless clients to sample per network per collector cycle",
+    )
+
+    @model_validator(mode="after")
+    def validate_signal_quality_limits(self) -> ClientSettings:
+        """Ensure signal quality rotation limits are coherent."""
+        if self.signal_quality_min_clients_per_cycle > self.signal_quality_max_clients_per_cycle:
+            raise ValueError(
+                "signal_quality_min_clients_per_cycle must be less than or equal to "
+                "signal_quality_max_clients_per_cycle"
+            )
+        return self
 
 
 class MerakiSettings(BaseModel):

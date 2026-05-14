@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from meraki_dashboard_exporter.collectors.clients import ClientsCollector
+from meraki_dashboard_exporter.core.api_models import NetworkClient
 from meraki_dashboard_exporter.core.constants import UpdateTier
 from tests.helpers.base import BaseCollectorTest
 from tests.helpers.factories import ClientFactory, NetworkFactory, OrganizationFactory
@@ -503,6 +504,59 @@ class TestClientsCollector(BaseCollectorTest):
             ap_name="",
             ap_mac="",
         )
+
+    def test_signal_quality_cycle_budget_scales_with_client_count(self, collector, settings):
+        """Test signal quality cycle budget scales while respecting min/max limits."""
+        settings.update_intervals.medium = 600
+        settings.clients.signal_quality_target_full_scan_interval = 21600
+        settings.clients.signal_quality_min_clients_per_cycle = 100
+        settings.clients.signal_quality_max_clients_per_cycle = 300
+
+        assert collector._compute_signal_quality_cycle_budget(500) == 100
+        assert collector._compute_signal_quality_cycle_budget(5000) == 139
+        assert collector._compute_signal_quality_cycle_budget(20000) == 300
+
+    async def test_signal_quality_collection_respects_cycle_and_network_limits(
+        self, collector, mock_api
+    ):
+        """Test RSSI/SNR collection is capped by cycle and network limits."""
+        collector.api = mock_api
+        collector.settings.clients.signal_quality_min_clients_per_cycle = 0
+        collector.settings.clients.signal_quality_max_clients_per_cycle = 3
+        collector.settings.clients.signal_quality_max_clients_per_network = 2
+        collector._signal_quality_previous_total_wireless_clients = 1000
+
+        clients = [
+            NetworkClient.model_validate(
+                ClientFactory.create(
+                    client_id=f"c{i}",
+                    recentDeviceConnection="Wireless",
+                    ssid="Corporate",
+                )
+            )
+            for i in range(5)
+        ]
+        mock_api.wireless.getNetworkWirelessSignalQualityHistory = MagicMock(
+            return_value=[{"snr": 30, "rssi": -55}]
+        )
+
+        await collector._start_signal_quality_cycle()
+        collector._prepare_signal_quality_network_rotation(
+            [{"id": "N_123", "name": "Test Network"}]
+        )
+        await collector._collect_wireless_signal_quality(
+            "123",
+            "Test Org",
+            "N_123",
+            "Test Network",
+            clients,
+            {},
+        )
+        await collector._finish_signal_quality_cycle()
+
+        assert mock_api.wireless.getNetworkWirelessSignalQualityHistory.call_count == 2
+        assert collector._signal_quality_cycle_collected_count == 2
+        assert collector._signal_quality_remaining_budget == 1
 
     async def test_application_name_sanitization(self, collector):
         """Test sanitization of various application names."""
