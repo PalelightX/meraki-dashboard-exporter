@@ -397,7 +397,7 @@ class MRWirelessCollector:
                     expected_type=list,
                     operation="getOrganizationSummaryTopSsidsByUsage",
                 )
-                logger.debug(
+                logger.info(
                     "Fetched MR SSID usage data",
                     org_id=org_id,
                     ssid_usage_count=len(ssid_usage),
@@ -536,7 +536,7 @@ class MRWirelessCollector:
                     )
                     emitted_count += 1
 
-            logger.debug(
+            logger.info(
                 "Processed MR SSID usage metrics",
                 org_id=org_id,
                 ssid_usage_count=len(ssid_usage),

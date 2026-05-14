@@ -481,7 +481,7 @@ class MRPerformanceCollector:
                 )
                 ethernet_data = []
 
-            logger.debug(
+            logger.info(
                 "Successfully fetched MR ethernet status",
                 org_id=org_id,
                 device_count=len(ethernet_data) if ethernet_data else 0,
@@ -632,7 +632,7 @@ class MRPerformanceCollector:
                 elif aggregation_enabled:
                     aggregation_missing_speed_count += 1
 
-            logger.debug(
+            logger.info(
                 "Processed MR ethernet aggregation data",
                 org_id=org_id,
                 device_aggregation_count=device_aggregation_count,
@@ -789,7 +789,7 @@ class MRPerformanceCollector:
 
             emitted_count += 1
 
-        logger.debug(
+        logger.info(
             "Processed MR network packet loss metrics",
             org_id=org_id,
             metric_group_count=emitted_count,
@@ -888,7 +888,7 @@ class MRPerformanceCollector:
 
             emitted_count += 1
 
-        logger.debug(
+        logger.info(
             "Processed MR device packet loss metrics",
             org_id=org_id,
             metric_group_count=emitted_count,
@@ -936,7 +936,7 @@ class MRPerformanceCollector:
                     total_pages="all",
                     timespan=300,  # 5 minutes
                 )
-                logger.debug(
+                logger.info(
                     "Fetched raw MR network packet loss response",
                     org_id=org_id,
                     endpoint=endpoint,
@@ -975,7 +975,7 @@ class MRPerformanceCollector:
                     total_pages="all",
                     timespan=300,  # 5 minutes
                 )
-                logger.debug(
+                logger.info(
                     "Fetched raw MR device packet loss response",
                     org_id=org_id,
                     endpoint=endpoint,
@@ -1097,7 +1097,7 @@ class MRPerformanceCollector:
                     serials=serials,
                     timespan=300,  # 5 minutes
                 )
-                logger.debug(
+                logger.info(
                     "Fetched raw MR CPU load response",
                     org_id=org_id,
                     endpoint=endpoint,
@@ -1140,7 +1140,7 @@ class MRPerformanceCollector:
                 self._process_device_cpu_data(device, cpu_value, org_id, org_name)
                 emitted_count += 1
 
-            logger.debug(
+            logger.info(
                 "Processed MR CPU load batch",
                 org_id=org_id,
                 serial_count=len(serials),
