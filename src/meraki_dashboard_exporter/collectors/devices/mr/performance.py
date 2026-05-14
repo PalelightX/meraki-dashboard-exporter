@@ -623,7 +623,7 @@ class MRPerformanceCollector:
                 org_id=org_id,
             )
 
-    @log_api_call("getOrganizationWirelessDevicesPacketLossByClient")
+    @log_api_call("getOrganizationWirelessDevicesPacketLoss")
     @with_error_handling(
         operation="Collect MR packet loss",
         continue_on_error=True,
@@ -783,6 +783,8 @@ class MRPerformanceCollector:
 
         for device_data in device_packet_loss:
             device = device_data.get("device", {})
+            if not isinstance(device, dict):
+                device = {}
             serial = device_data.get("serial") or device.get("serial", "")
             if not serial:
                 skipped_count += 1
@@ -871,6 +873,8 @@ class MRPerformanceCollector:
     def _extract_network_info(self, data: dict[str, Any]) -> tuple[str, str]:
         """Extract network ID/name from current and documented API shapes."""
         network = data.get("network", {})
+        if not isinstance(network, dict):
+            network = {}
         network_id = data.get("networkId") or network.get("id", "")
         network_name = data.get("networkName") or network.get("name") or network_id
         return str(network_id), str(network_name)
@@ -1084,6 +1088,8 @@ class MRPerformanceCollector:
     def _extract_cpu_serial(self, item: dict[str, Any]) -> str:
         """Extract AP serial from current and documented CPU API shapes."""
         device = item.get("device", {})
+        if not isinstance(device, dict):
+            device = {}
         return str(item.get("serial") or device.get("serial", ""))
 
     def _extract_cpu_data(
