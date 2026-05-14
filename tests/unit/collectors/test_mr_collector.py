@@ -314,6 +314,7 @@ class TestMRCollector:
         self,
         mr_collector: MRCollector,
         mock_api: MagicMock,
+        mock_parent: MagicMock,
     ) -> None:
         """Test SSID usage metrics collection."""
         org_id = "123"
@@ -345,6 +346,15 @@ class TestMRCollector:
 
         # Verify API call
         mock_api.organizations.getOrganizationSummaryTopSsidsByUsage.assert_called_once_with(org_id)
+
+        total_usage_calls = [
+            call
+            for call in mock_parent._set_metric.call_args_list
+            if call.args[0]._name == "meraki_mr_ssid_usage_total_mb"
+        ]
+        assert len(total_usage_calls) == 2
+        assert total_usage_calls[0].args[1]["ssid"] == "Guest WiFi"
+        assert total_usage_calls[0].args[2] == 1536.75
 
     async def test_collect_ssid_usage_reuses_ssid_network_cache(
         self,

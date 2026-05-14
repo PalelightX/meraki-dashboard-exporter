@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ....core.constants import MRMetricName
 from ....core.error_handling import ErrorCategory, validate_response_format, with_error_handling
@@ -397,26 +397,45 @@ class MRWirelessCollector:
                     expected_type=list,
                     operation="getOrganizationSummaryTopSsidsByUsage",
                 )
+                logger.debug(
+                    "Fetched MR SSID usage data",
+                    org_id=org_id,
+                    ssid_usage_count=len(ssid_usage),
+                    first_keys=list(ssid_usage[0].keys()) if ssid_usage else [],
+                )
 
             # Build SSID to network mapping for better labeling
             ssid_to_networks = await self._build_ssid_to_network_mapping(org_id)
+
+            missing_ssid_name_count = 0
+            emitted_count = 0
 
             # Process SSID usage data
             for ssid_data in ssid_usage:
                 ssid_name = ssid_data.get("name", "") or ssid_data.get("ssidName", "")
                 if not ssid_name:
+                    missing_ssid_name_count += 1
                     continue
 
                 # Get usage metrics
                 usage = ssid_data.get("usage", {})
-                total_mb = usage.get("total", 0)
-                downstream_mb = usage.get("downstream", 0)
-                upstream_mb = usage.get("upstream", 0)
-                usage_percentage = usage.get("percentage", 0)
+                if not isinstance(usage, dict):
+                    usage = {}
+                total_mb = usage.get("total", ssid_data.get("usageTotalMb", 0))
+                downstream_mb = usage.get(
+                    "downstream", ssid_data.get("usageDownstreamMb", 0)
+                )
+                upstream_mb = usage.get("upstream", ssid_data.get("usageUpstreamMb", 0))
+                usage_percentage = usage.get("percentage", ssid_data.get("percentUsage", 0))
 
                 # Client count
                 clients = ssid_data.get("clients", {})
-                client_count = clients.get("counts", {}).get("total", clients.get("total", 0))
+                if isinstance(clients, dict):
+                    client_count = clients.get("counts", {}).get(
+                        "total", clients.get("total", ssid_data.get("clientCount", 0))
+                    )
+                else:
+                    client_count = ssid_data.get("clientCount", 0)
 
                 # Get networks for this SSID
                 networks = ssid_to_networks.get(ssid_name, [])
@@ -468,6 +487,7 @@ class MRWirelessCollector:
                             ssid_labels,
                             client_count,
                         )
+                        emitted_count += 1
                 else:
                     # No network mapping found, use generic labels
                     logger.debug(
@@ -514,6 +534,15 @@ class MRWirelessCollector:
                         ssid_labels,
                         client_count,
                     )
+                    emitted_count += 1
+
+            logger.debug(
+                "Processed MR SSID usage metrics",
+                org_id=org_id,
+                ssid_usage_count=len(ssid_usage),
+                missing_ssid_name_count=missing_ssid_name_count,
+                metric_group_count=emitted_count,
+            )
 
         except Exception:
             logger.exception(
