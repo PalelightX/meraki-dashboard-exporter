@@ -7,7 +7,7 @@ import inspect
 import os
 from collections.abc import Callable
 from contextvars import copy_context
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -54,7 +54,7 @@ class _SafeSpanContext:
         self._span_ctx.run(self._span_cm.__enter__)
         return self._span
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
         try:
             if self._span_cm is not None:
                 if self._span_ctx is not None:
@@ -413,13 +413,14 @@ def trace_method(
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         """Inner decorator."""
+        func_name = getattr(func, "__name__", func.__class__.__name__)
         if inspect.iscoroutinefunction(func):
 
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 """Async wrapper with tracing."""
                 tracer = trace.get_tracer(func.__module__)
-                span_name = name or f"{func.__module__}.{func.__name__}"
+                span_name = name or f"{func.__module__}.{func_name}"
 
                 with safe_start_as_current_span(tracer, span_name) as span:
                     try:
@@ -434,14 +435,14 @@ def trace_method(
                         span.record_exception(e)
                         raise
 
-            return async_wrapper  # type: ignore[return-value]  # ParamSpec can't handle wrappers
+            return cast(Callable[P, R], async_wrapper)
         else:
 
             @functools.wraps(func)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                 """Sync wrapper with tracing."""
                 tracer = trace.get_tracer(func.__module__)
-                span_name = name or f"{func.__module__}.{func.__name__}"
+                span_name = name or f"{func.__module__}.{func_name}"
 
                 with safe_start_as_current_span(tracer, span_name) as span:
                     try:
@@ -456,6 +457,6 @@ def trace_method(
                         span.record_exception(e)
                         raise
 
-            return sync_wrapper
+            return cast(Callable[P, R], sync_wrapper)
 
     return decorator

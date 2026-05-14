@@ -48,6 +48,12 @@ class NetworkHealthCollector(MetricCollector):
         """Initialize network health collector with sub-collectors."""
         super().__init__(api, settings, registry, inventory, expiration_manager, rate_limiter)
 
+        self._nh_rl_lock = asyncio.Lock()
+        self._nh_endpoint_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._nh_endpoint_cooldown_until: dict[tuple[str, str], float] = {}
+        self._nh_network_cooldown_until: dict[tuple[str, str, str], float] = {}
+        self._nh_rate_limit_hits: dict[tuple[str, str], int] = {}
+
         # Initialize sub-collectors
         self.rf_health_collector = RFHealthCollector(self)
         self.connection_stats_collector = ConnectionStatsCollector(self)
