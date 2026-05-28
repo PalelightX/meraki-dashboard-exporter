@@ -313,11 +313,16 @@ class DeviceCollector(MetricCollector):
 
         try:
             # Get organizations with error handling
+            logger.info("Starting DeviceCollector organization fetch")
             organizations = await self._fetch_organizations()
             if not organizations:
                 logger.warning("No organizations found for device collection")
                 return
             api_calls_made += 1
+            logger.info(
+                "Completed DeviceCollector organization fetch",
+                org_count=len(organizations),
+            )
 
             logger.info(
                 "Starting parallel organization processing",
@@ -397,18 +402,47 @@ class DeviceCollector(MetricCollector):
 
         """
         try:
+            org_start_time = asyncio.get_event_loop().time()
             with LogContext(org_id=org_id):
                 # Store device lookup map for use in other collectors
                 self._device_lookup: dict[str, dict[str, Any]] = {}
 
                 # Fetch devices with error handling
+                logger.info(
+                    "Starting device inventory fetch",
+                    org_id=org_id,
+                    org_name=org_name,
+                )
                 devices = await self._fetch_devices(org_id)
                 if not devices:
                     logger.warning("No devices found", org_id=org_id)
                     return
+                logger.info(
+                    "Completed device inventory fetch",
+                    org_id=org_id,
+                    org_name=org_name,
+                    device_count=len(devices),
+                    duration_seconds=round(asyncio.get_event_loop().time() - org_start_time, 2),
+                )
 
                 # Fetch availabilities with error handling
+                availability_start_time = asyncio.get_event_loop().time()
+                logger.info(
+                    "Starting device availability fetch",
+                    org_id=org_id,
+                    org_name=org_name,
+                    device_count=len(devices),
+                )
                 availabilities = await self._fetch_device_availabilities(org_id) or []
+                logger.info(
+                    "Completed device availability fetch",
+                    org_id=org_id,
+                    org_name=org_name,
+                    availability_count=len(availabilities),
+                    duration_seconds=round(
+                        asyncio.get_event_loop().time() - availability_start_time, 2
+                    ),
+                )
 
                 logger.debug(
                     "Processing devices",
@@ -422,8 +456,21 @@ class DeviceCollector(MetricCollector):
             }
 
             # Fetch network information for adding network names to devices
+            network_start_time = asyncio.get_event_loop().time()
+            logger.info(
+                "Starting device network map fetch",
+                org_id=org_id,
+                org_name=org_name,
+            )
             networks = await self._fetch_networks_for_poe(org_id)
             network_map = {n["id"]: n["name"] for n in networks}
+            logger.info(
+                "Completed device network map fetch",
+                org_id=org_id,
+                org_name=org_name,
+                network_count=len(networks),
+                duration_seconds=round(asyncio.get_event_loop().time() - network_start_time, 2),
+            )
 
             # Group devices by type for batch processing
             devices_by_type: dict[DeviceType, list[dict[str, Any]]] = {}
@@ -476,11 +523,30 @@ class DeviceCollector(MetricCollector):
                     devices_by_type[device_type] = []
                 devices_by_type[device_type].append(device)
 
+            device_type_counts = {
+                device_type.value: len(type_devices)
+                for device_type, type_devices in devices_by_type.items()
+            }
+            logger.info(
+                "Completed device inventory classification",
+                org_id=org_id,
+                org_name=org_name,
+                device_count=len(devices),
+                device_type_counts=device_type_counts,
+            )
+
             # Store references for device processing
             ms_devices = devices_by_type.get(DeviceType.MS, [])
 
             # Process MS devices
             if ms_devices:
+                ms_start_time = asyncio.get_event_loop().time()
+                logger.info(
+                    "Starting MS device metrics collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    ms_device_count=len(ms_devices),
+                )
                 spread_window = self._get_smoothing_window()
                 min_delay = self.settings.api.smoothing_min_batch_delay
                 max_delay = self.settings.api.smoothing_max_batch_delay
@@ -563,6 +629,14 @@ class DeviceCollector(MetricCollector):
                         item_description="MS packet stats",
                         error_context_func=lambda device: {"serial": device["serial"]},
                     )
+                logger.info(
+                    "Completed MS device metrics collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    ms_device_count=len(ms_devices),
+                    used_fallback=used_fallback,
+                    duration_seconds=round(asyncio.get_event_loop().time() - ms_start_time, 2),
+                )
 
             # Note: MR per-device collection has been replaced with org/network-level
             # collection for efficiency. Client counts use org-wide endpoint and
@@ -594,26 +668,66 @@ class DeviceCollector(MetricCollector):
 
             # Aggregate network-wide POE metrics after all switches are collected
             try:
+                poe_start_time = asyncio.get_event_loop().time()
+                logger.info(
+                    "Starting network POE aggregation",
+                    org_id=org_id,
+                    org_name=org_name,
+                    device_count=len(devices),
+                )
                 await self._aggregate_network_poe(
                     org_id,
                     org_name,
                     devices,
                     network_map=network_map,
                 )
+                logger.info(
+                    "Completed network POE aggregation",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - poe_start_time, 2),
+                )
             except Exception:
                 logger.exception("Failed to aggregate POE metrics")
 
             # Collect switch port overview metrics
             try:
+                switch_overview_start_time = asyncio.get_event_loop().time()
+                logger.info(
+                    "Starting switch port overview collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                )
                 await self._collect_switch_port_overview(org_id, org_name)
+                logger.info(
+                    "Completed switch port overview collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(
+                        asyncio.get_event_loop().time() - switch_overview_start_time, 2
+                    ),
+                )
             except Exception:
                 logger.exception("Failed to collect switch port overview")
 
             # Collect memory metrics for all devices
             try:
                 # Use base collector's memory collection
+                memory_start_time = asyncio.get_event_loop().time()
+                logger.info(
+                    "Starting device memory metrics collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    device_lookup_count=len(self._device_lookup),
+                )
                 await self.ms_collector.collect_memory_metrics(
                     org_id, org_name, self._device_lookup
+                )
+                logger.info(
+                    "Completed device memory metrics collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - memory_start_time, 2),
                 )
             except Exception:
                 logger.exception("Failed to collect memory metrics")
@@ -621,12 +735,49 @@ class DeviceCollector(MetricCollector):
             # Collect MR-specific metrics
             if any(d for d in devices if d.get("model", "").startswith(DeviceType.MR)):
                 # Use MR collector for all MR-specific metrics
+                mr_start_time = asyncio.get_event_loop().time()
+                logger.info(
+                    "Starting MR-specific metrics collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    mr_device_count=len(devices_by_type.get(DeviceType.MR, [])),
+                )
                 await self._collect_mr_specific_metrics(org_id, org_name, devices)
+                logger.info(
+                    "Completed MR-specific metrics collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - mr_start_time, 2),
+                )
 
             # Collect MS-specific metrics
             if any(d for d in devices if d.get("model", "").startswith(DeviceType.MS)):
                 # Use MS collector for all MS-specific metrics
+                ms_specific_start_time = asyncio.get_event_loop().time()
+                logger.info(
+                    "Starting MS-specific metrics collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    ms_device_count=len(devices_by_type.get(DeviceType.MS, [])),
+                )
                 await self._collect_ms_specific_metrics(org_id, org_name, devices)
+                logger.info(
+                    "Completed MS-specific metrics collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(
+                        asyncio.get_event_loop().time() - ms_specific_start_time, 2
+                    ),
+                )
+
+            logger.info(
+                "Completed organization device collection",
+                org_id=org_id,
+                org_name=org_name,
+                device_count=len(devices),
+                device_type_counts=device_type_counts,
+                duration_seconds=round(asyncio.get_event_loop().time() - org_start_time, 2),
+            )
 
         except Exception as e:
             logger.exception(
@@ -898,6 +1049,8 @@ class DeviceCollector(MetricCollector):
             Organization name.
         devices : list[dict[str, Any]]
             All devices in the organization.
+        network_map : dict[str, str] | None
+            Optional pre-fetched network ID to name map.
 
         """
         try:

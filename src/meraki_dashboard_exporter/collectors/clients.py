@@ -33,6 +33,13 @@ logger = structlog.get_logger(__name__)
 class ClientsCollector(MetricCollector):
     """Collector for client-level metrics across all networks."""
 
+    CLIENT_SUPPORTED_PRODUCT_TYPES = {
+        "appliance",
+        "cellularGateway",
+        "switch",
+        "wireless",
+    }
+
     @property
     def is_active(self) -> bool:
         """Check if this collector is actively collecting metrics."""
@@ -380,6 +387,24 @@ class ClientsCollector(MetricCollector):
             return
 
         networks = self._prepare_signal_quality_network_rotation(networks)
+        eligible_networks, skipped_networks = self._filter_client_supported_networks(networks)
+        if skipped_networks:
+            skipped_product_types = sorted({
+                ",".join(network.get("productTypes", [])) or "unknown"
+                for network in skipped_networks
+            })
+            logger.info(
+                "Skipping networks that do not support client collection",
+                org_id=org_id,
+                org_name=org_name,
+                input_network_count=len(networks),
+                eligible_network_count=len(eligible_networks),
+                skipped_network_count=len(skipped_networks),
+                skipped_product_types=skipped_product_types,
+            )
+        if not eligible_networks:
+            return
+
         batch_size = self.settings.api.client_batch_size
         delay_between_batches = self.settings.api.batch_delay
 
@@ -392,7 +417,7 @@ class ClientsCollector(MetricCollector):
             )
 
         await process_in_batches_with_errors(
-            networks,
+            eligible_networks,
             _process_network,
             batch_size=batch_size,
             delay_between_batches=delay_between_batches,
@@ -408,6 +433,20 @@ class ClientsCollector(MetricCollector):
                 "network_name": network.get("name"),
             },
         )
+
+    def _filter_client_supported_networks(self, networks: list[Any]) -> tuple[list[Any], list[Any]]:
+        """Skip networks where Meraki getNetworkClients is known to be unsupported."""
+        eligible_networks: list[Any] = []
+        skipped_networks: list[Any] = []
+
+        for network in networks:
+            product_types = set(network.get("productTypes", []))
+            if product_types and product_types.isdisjoint(self.CLIENT_SUPPORTED_PRODUCT_TYPES):
+                skipped_networks.append(network)
+                continue
+            eligible_networks.append(network)
+
+        return eligible_networks, skipped_networks
 
     @with_error_handling(
         operation="Collect network clients",

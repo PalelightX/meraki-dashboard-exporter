@@ -72,6 +72,36 @@ class TestClientsCollector(BaseCollectorTest):
         self.assert_collector_success(collector, metrics)
         self.assert_api_call_tracked(collector, metrics, "getOrganizations")
 
+    async def test_skips_systems_manager_only_networks(self, collector, mock_api_builder):
+        """Test Systems Manager only networks are not sent to getNetworkClients."""
+        org = OrganizationFactory.create(org_id="123", name="Test Org")
+        systems_manager_network = NetworkFactory.create(
+            network_id="N_SM",
+            name="Systems Manager",
+            org_id=org["id"],
+            product_types=["systemsManager"],
+        )
+        wireless_network = NetworkFactory.create(
+            network_id="N_WIFI",
+            name="Wireless Network",
+            org_id=org["id"],
+            product_types=["wireless"],
+        )
+
+        api = (
+            mock_api_builder
+            .with_organizations([org])
+            .with_networks([systems_manager_network, wireless_network], org_id=org["id"])
+            .with_custom_response("getNetworkClients", [])
+            .build()
+        )
+        self._update_collector_api(collector, api)
+
+        await collector._collect_impl()
+
+        api.networks.getNetworkClients.assert_called_once()
+        assert api.networks.getNetworkClients.call_args.args[0] == "N_WIFI"
+
     async def test_collect_basic_client_metrics(self, collector, mock_api_builder, metrics):
         """Test collection of basic client metrics."""
         # Set up test data
@@ -541,9 +571,9 @@ class TestClientsCollector(BaseCollectorTest):
         )
 
         await collector._start_signal_quality_cycle()
-        collector._prepare_signal_quality_network_rotation(
-            [{"id": "N_123", "name": "Test Network"}]
-        )
+        collector._prepare_signal_quality_network_rotation([
+            {"id": "N_123", "name": "Test Network"}
+        ])
         await collector._collect_wireless_signal_quality(
             "123",
             "Test Org",
