@@ -14,8 +14,8 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi import Request as FastAPIRequest
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
+from pydantic import BaseModel
 from starlette.requests import Request
 
 from .__version__ import __version__
@@ -26,7 +26,7 @@ from .core.config import Settings
 from .core.config_logger import log_startup_summary
 from .core.constants import UpdateTier
 from .core.discovery import DiscoveryService
-from .core.logging import get_logger, setup_logging
+from .core.logging import get_logger, infer_exporter_role, setup_logging
 from .core.metric_expiration import MetricExpirationManager
 from .core.otel_logging import OTELLoggingConfig
 from .core.otel_tracing import TracingConfig
@@ -172,6 +172,9 @@ class ExporterApp:
             host=self.settings.server.host,
             port=self.settings.server.port,
             org_id=self.settings.meraki.org_id,
+            exporter_role=infer_exporter_role(self.settings),
+            webhooks_enabled=self.settings.webhooks.enabled,
+            active_collectors=sorted(self.settings.collectors.active_collectors),
         )
 
         # Run discovery to log environment information once at startup

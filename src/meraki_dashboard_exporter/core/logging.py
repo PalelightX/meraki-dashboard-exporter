@@ -15,6 +15,20 @@ if TYPE_CHECKING:
 _LOGGING_CONFIGURED = False
 
 
+def infer_exporter_role(settings: Settings) -> str:
+    """Infer the runtime role from enabled webhooks and collectors."""
+    collectors_enabled = bool(settings.collectors.active_collectors)
+    webhooks_enabled = settings.webhooks.enabled
+
+    if collectors_enabled and webhooks_enabled:
+        return "collector_webhook"
+    if collectors_enabled:
+        return "collector"
+    if webhooks_enabled:
+        return "webhook"
+    return "idle"
+
+
 def setup_logging(settings: Settings) -> None:
     """Configure structured logging with structlog using logfmt format.
 
@@ -155,6 +169,13 @@ def setup_logging(settings: Settings) -> None:
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=False,
+    )
+
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        exporter_role=infer_exporter_role(settings),
+        webhooks_enabled=settings.webhooks.enabled,
+        collectors_enabled=bool(settings.collectors.active_collectors),
     )
 
     _LOGGING_CONFIGURED = True
