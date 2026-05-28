@@ -160,6 +160,45 @@ class TestClientsCollector(BaseCollectorTest):
         metrics.assert_gauge_value("meraki_client_usage_recv_kb", 2000, client_id="c1")
         metrics.assert_gauge_value("meraki_client_usage_total_kb", 3000, client_id="c1")
 
+    async def test_collect_skips_clients_with_missing_mac(
+        self, collector, mock_api_builder, metrics
+    ):
+        """Test malformed clients do not fail collection for the whole network."""
+        org = OrganizationFactory.create(org_id="123", name="Test Org")
+        network = NetworkFactory.create(network_id="N_123", name="Test Network", org_id=org["id"])
+
+        valid_client = ClientFactory.create(
+            client_id="c1",
+            mac="aa:bb:cc:dd:ee:01",
+            ip="10.0.0.1",
+            status="Online",
+            ssid="Corporate",
+        )
+        invalid_client = ClientFactory.create(
+            client_id="c2",
+            mac="aa:bb:cc:dd:ee:02",
+            ip="10.0.0.2",
+            status="Online",
+            ssid="Corporate",
+        )
+        invalid_client["mac"] = None
+
+        api = (
+            mock_api_builder
+            .with_organizations([org])
+            .with_networks([network], org_id=org["id"])
+            .with_custom_response("getNetworkClients", [valid_client, invalid_client])
+            .build()
+        )
+        self._update_collector_api(collector, api)
+
+        with patch.object(collector.dns_resolver, "resolve_multiple") as mock_resolve:
+            mock_resolve.return_value = {}
+            await self.run_collector(collector)
+
+        metrics.assert_gauge_value("meraki_client_status", 1, client_id="c1")
+        assert not any(client.id == "c2" for client in collector.client_store.get_all_clients())
+
     async def test_collect_aggregated_metrics(self, collector, mock_api_builder, metrics):
         """Test collection of aggregated metrics (capabilities, SSID, VLAN counts)."""
         # Set up test data

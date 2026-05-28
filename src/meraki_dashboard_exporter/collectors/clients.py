@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import structlog
+from pydantic import ValidationError
 
 from ..core.api_helpers import create_api_helper
 from ..core.api_models import NetworkClient
@@ -510,14 +511,21 @@ class ClientsCollector(MetricCollector):
             clients_data, expected_type=list, operation="getNetworkClients"
         )
 
-        # Parse client data
-        clients = [NetworkClient.model_validate(c) for c in clients_data]
+        # Parse client data. A single malformed client from the API must not
+        # fail the whole network collection.
+        clients = self._parse_network_clients(
+            clients_data,
+            org_id=org_id,
+            network_id=network_id,
+            network_name=network_name,
+        )
 
         logger.info(
             "Fetched client data",
             org_id=org_id,
             network_id=network_id,
             network_name=network_name,
+            raw_client_count=len(clients_data),
             client_count=len(clients),
         )
 
@@ -553,6 +561,51 @@ class ClientsCollector(MetricCollector):
         await self._collect_wireless_signal_quality(
             org_id, org_name, network_id, network_name, clients, hostnames
         )
+
+    def _parse_network_clients(
+        self,
+        clients_data: list[Any],
+        *,
+        org_id: str,
+        network_id: str,
+        network_name: str,
+    ) -> list[NetworkClient]:
+        """Validate client records while skipping malformed API entries."""
+        clients: list[NetworkClient] = []
+        invalid_shape_count = 0
+        missing_mac_count = 0
+        validation_error_count = 0
+
+        for raw_client in clients_data:
+            if not isinstance(raw_client, dict):
+                invalid_shape_count += 1
+                continue
+
+            if not raw_client.get("mac"):
+                missing_mac_count += 1
+                continue
+
+            try:
+                clients.append(NetworkClient.model_validate(raw_client))
+            except ValidationError:
+                validation_error_count += 1
+
+        skipped_client_count = invalid_shape_count + missing_mac_count + validation_error_count
+        if skipped_client_count:
+            logger.info(
+                "Skipped invalid network clients",
+                org_id=org_id,
+                network_id=network_id,
+                network_name=network_name,
+                input_client_count=len(clients_data),
+                parsed_client_count=len(clients),
+                skipped_client_count=skipped_client_count,
+                invalid_shape_count=invalid_shape_count,
+                missing_mac_count=missing_mac_count,
+                validation_error_count=validation_error_count,
+            )
+
+        return clients
 
     def _sanitize_label_value(self, value: str | None, max_length: int = 2048) -> str:
         """Sanitize a label value for Prometheus.
