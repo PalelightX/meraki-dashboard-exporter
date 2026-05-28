@@ -26,6 +26,13 @@ logger = get_logger(__name__)
 class AlertsCollector(MetricCollector):
     """Collector for Meraki assurance alerts."""
 
+    NETWORK_HEALTH_ALERTS_FORBIDDEN_TTL_SECONDS = 3600
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        """Initialize the alerts collector."""
+        super().__init__(*args, **kwargs)
+        self._network_health_alerts_forbidden_until_by_network: dict[str, float] = {}
+
     def _initialize_metrics(self) -> None:
         """Initialize alert metrics."""
         # Active alerts count by various dimensions
@@ -554,12 +561,30 @@ class AlertsCollector(MetricCollector):
         org_id = network.get("orgId", "")
         org_name = network.get("orgName", org_id)
 
+        if self._should_skip_network_health_alerts(
+            network_id,
+            network_name=network_name,
+            org_id=org_id,
+        ):
+            return
+
         with LogContext(network_id=network_id, network_name=network_name, org_id=org_id):
             # Get network health alerts
-            alerts = await asyncio.to_thread(
-                self.api.networks.getNetworkHealthAlerts,
-                network_id,
-            )
+            try:
+                alerts = await asyncio.to_thread(
+                    self.api.networks.getNetworkHealthAlerts,
+                    network_id,
+                )
+            except Exception as exc:
+                if self._is_forbidden_error(exc):
+                    self._cache_network_health_alerts_forbidden(
+                        network_id,
+                        network_name=network_name,
+                        org_id=org_id,
+                        error=str(exc),
+                    )
+                    return
+                raise
 
             alerts = validate_response_format(
                 alerts, expected_type=list, operation="getNetworkHealthAlerts"
@@ -602,3 +627,57 @@ class AlertsCollector(MetricCollector):
                 active_alerts=sum(alert_counts.values()),
                 categories=len(alert_counts),
             )
+
+    def _should_skip_network_health_alerts(
+        self,
+        network_id: str,
+        *,
+        network_name: str,
+        org_id: str,
+    ) -> bool:
+        """Skip known-forbidden health alert calls until the retry window expires."""
+        forbidden_until = self._network_health_alerts_forbidden_until_by_network.get(network_id)
+        if forbidden_until is None:
+            return False
+
+        now = time.monotonic()
+        if forbidden_until <= now:
+            del self._network_health_alerts_forbidden_until_by_network[network_id]
+            return False
+
+        logger.info(
+            "Skipping network health alerts after recent 403 Forbidden",
+            org_id=org_id,
+            network_id=network_id,
+            network_name=network_name,
+            retry_after_seconds=round(forbidden_until - now),
+        )
+        return True
+
+    def _cache_network_health_alerts_forbidden(
+        self,
+        network_id: str,
+        *,
+        network_name: str,
+        org_id: str,
+        error: str,
+    ) -> None:
+        """Cache 403 failures so unsupported networks are not retried every cycle."""
+        ttl_seconds = self.NETWORK_HEALTH_ALERTS_FORBIDDEN_TTL_SECONDS
+        self._network_health_alerts_forbidden_until_by_network[network_id] = (
+            time.monotonic() + ttl_seconds
+        )
+        logger.warning(
+            "Network health alerts API forbidden; suppressing retries temporarily",
+            org_id=org_id,
+            network_id=network_id,
+            network_name=network_name,
+            retry_after_seconds=ttl_seconds,
+            error=error,
+        )
+
+    @staticmethod
+    def _is_forbidden_error(error: Exception) -> bool:
+        """Return true for Meraki SDK 403 Forbidden errors."""
+        error_text = str(error)
+        return "403" in error_text and "Forbidden" in error_text

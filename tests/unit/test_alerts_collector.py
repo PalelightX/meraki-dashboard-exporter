@@ -294,6 +294,25 @@ class TestAlertsCollector(BaseCollectorTest):
         api.sensor.getNetworkSensorAlertsOverviewByMetric.assert_not_called()
         api.networks.getNetworkHealthAlerts.assert_called()
 
+    async def test_network_health_alerts_403_is_cached_per_network(
+        self, collector, mock_api_builder
+    ):
+        """Test repeated 403 errors do not call getNetworkHealthAlerts every cycle."""
+        network = NetworkFactory.create(network_id="N_123", name="Test Network")
+        network["orgId"] = "123"
+        network["orgName"] = "Test Org"
+
+        api = mock_api_builder.build()
+        api.networks.getNetworkHealthAlerts = MagicMock(
+            side_effect=Exception("networks, getNetworkHealthAlerts - 403 Forbidden, forbidden")
+        )
+        collector.api = api
+
+        await collector._collect_network_health_alerts(network)
+        await collector._collect_network_health_alerts(network)
+
+        assert api.networks.getNetworkHealthAlerts.call_count == 1
+
     async def test_collect_sensor_alerts(self, collector, mock_api_builder, metrics):
         """Test collection of sensor alert metrics."""
         # Set up test data
