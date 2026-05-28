@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ....core.constants import MRMetricName
 from ....core.error_handling import ErrorCategory, validate_response_format, with_error_handling
@@ -25,6 +25,11 @@ if TYPE_CHECKING:
     from ...device import DeviceCollector
 
 logger = get_logger(__name__)
+
+
+def _dict_keys(value: Any) -> list[str]:
+    """Return dict keys for diagnostics without logging metric values."""
+    return [str(key) for key in value] if isinstance(value, dict) else []
 
 
 class MRWirelessCollector:
@@ -401,13 +406,36 @@ class MRWirelessCollector:
                     "Fetched MR SSID usage data",
                     org_id=org_id,
                     ssid_usage_count=len(ssid_usage),
-                    first_keys=list(ssid_usage[0].keys()) if ssid_usage else [],
+                    response_type=type(ssid_usage).__name__,
+                    first_keys=_dict_keys(ssid_usage[0] if ssid_usage else None),
+                    first_usage_keys=_dict_keys(ssid_usage[0].get("usage") if ssid_usage else None),
+                    first_clients_keys=_dict_keys(
+                        ssid_usage[0].get("clients") if ssid_usage else None
+                    ),
+                    first_client_counts_keys=_dict_keys(
+                        ssid_usage[0].get("clients", {}).get("counts")
+                        if ssid_usage and isinstance(ssid_usage[0].get("clients"), dict)
+                        else None
+                    ),
                 )
 
             # Build SSID to network mapping for better labeling
             ssid_to_networks = await self._build_ssid_to_network_mapping(org_id)
 
             missing_ssid_name_count = 0
+            usage_total_count = 0
+            usage_downstream_count = 0
+            usage_upstream_count = 0
+            usage_percentage_count = 0
+            client_count_count = 0
+            network_mapping_count = 0
+            missing_network_mapping_count = 0
+            total_mb_set_count = 0
+            downstream_mb_set_count = 0
+            upstream_mb_set_count = 0
+            usage_percentage_set_count = 0
+            client_count_set_count = 0
+            metric_set_count = 0
             emitted_count = 0
 
             # Process SSID usage data
@@ -422,11 +450,23 @@ class MRWirelessCollector:
                 if not isinstance(usage, dict):
                     usage = {}
                 total_mb = usage.get("total", ssid_data.get("usageTotalMb", 0))
-                downstream_mb = usage.get(
-                    "downstream", ssid_data.get("usageDownstreamMb", 0)
-                )
+                downstream_mb = usage.get("downstream", ssid_data.get("usageDownstreamMb", 0))
                 upstream_mb = usage.get("upstream", ssid_data.get("usageUpstreamMb", 0))
                 usage_percentage = usage.get("percentage", ssid_data.get("percentUsage", 0))
+                usage_total_count += (
+                    usage.get("total") is not None or ssid_data.get("usageTotalMb") is not None
+                )
+                usage_downstream_count += (
+                    usage.get("downstream") is not None
+                    or ssid_data.get("usageDownstreamMb") is not None
+                )
+                usage_upstream_count += (
+                    usage.get("upstream") is not None
+                    or ssid_data.get("usageUpstreamMb") is not None
+                )
+                usage_percentage_count += (
+                    usage.get("percentage") is not None or ssid_data.get("percentUsage") is not None
+                )
 
                 # Client count
                 clients = ssid_data.get("clients", {})
@@ -434,13 +474,22 @@ class MRWirelessCollector:
                     client_count = clients.get("counts", {}).get(
                         "total", clients.get("total", ssid_data.get("clientCount", 0))
                     )
+                    client_count_count += (
+                        clients.get("counts", {}).get("total") is not None
+                        or clients.get("total") is not None
+                        or ssid_data.get("clientCount") is not None
+                    )
                 else:
                     client_count = ssid_data.get("clientCount", 0)
+                    client_count_count += ssid_data.get("clientCount") is not None
 
                 # Get networks for this SSID
                 networks = ssid_to_networks.get(ssid_name, [])
                 if not networks:
+                    missing_network_mapping_count += 1
                     networks = [{"id": "", "name": "unknown"}]
+                else:
+                    network_mapping_count += 1
 
                 if networks:
                     # Set metrics for each network with this SSID
@@ -463,30 +512,40 @@ class MRWirelessCollector:
                             ssid_labels,
                             total_mb,
                         )
+                        total_mb_set_count += 1
+                        metric_set_count += 1
 
                         self.parent._set_metric(
                             self._ssid_usage_downstream_mb,
                             ssid_labels,
                             downstream_mb,
                         )
+                        downstream_mb_set_count += 1
+                        metric_set_count += 1
 
                         self.parent._set_metric(
                             self._ssid_usage_upstream_mb,
                             ssid_labels,
                             upstream_mb,
                         )
+                        upstream_mb_set_count += 1
+                        metric_set_count += 1
 
                         self.parent._set_metric(
                             self._ssid_usage_percentage,
                             ssid_labels,
                             usage_percentage,
                         )
+                        usage_percentage_set_count += 1
+                        metric_set_count += 1
 
                         self.parent._set_metric(
                             self._ssid_client_count,
                             ssid_labels,
                             client_count,
                         )
+                        client_count_set_count += 1
+                        metric_set_count += 1
                         emitted_count += 1
                 else:
                     # No network mapping found, use generic labels
@@ -510,30 +569,40 @@ class MRWirelessCollector:
                         ssid_labels,
                         total_mb,
                     )
+                    total_mb_set_count += 1
+                    metric_set_count += 1
 
                     self.parent._set_metric(
                         self._ssid_usage_downstream_mb,
                         ssid_labels,
                         downstream_mb,
                     )
+                    downstream_mb_set_count += 1
+                    metric_set_count += 1
 
                     self.parent._set_metric(
                         self._ssid_usage_upstream_mb,
                         ssid_labels,
                         upstream_mb,
                     )
+                    upstream_mb_set_count += 1
+                    metric_set_count += 1
 
                     self.parent._set_metric(
                         self._ssid_usage_percentage,
                         ssid_labels,
                         usage_percentage,
                     )
+                    usage_percentage_set_count += 1
+                    metric_set_count += 1
 
                     self.parent._set_metric(
                         self._ssid_client_count,
                         ssid_labels,
                         client_count,
                     )
+                    client_count_set_count += 1
+                    metric_set_count += 1
                     emitted_count += 1
 
             logger.info(
@@ -541,7 +610,20 @@ class MRWirelessCollector:
                 org_id=org_id,
                 ssid_usage_count=len(ssid_usage),
                 missing_ssid_name_count=missing_ssid_name_count,
+                usage_total_count=usage_total_count,
+                usage_downstream_count=usage_downstream_count,
+                usage_upstream_count=usage_upstream_count,
+                usage_percentage_count=usage_percentage_count,
+                client_count_count=client_count_count,
+                network_mapping_count=network_mapping_count,
+                missing_network_mapping_count=missing_network_mapping_count,
                 metric_group_count=emitted_count,
+                metric_set_count=metric_set_count,
+                total_mb_set_count=total_mb_set_count,
+                downstream_mb_set_count=downstream_mb_set_count,
+                upstream_mb_set_count=upstream_mb_set_count,
+                usage_percentage_set_count=usage_percentage_set_count,
+                client_count_set_count=client_count_set_count,
             )
 
         except Exception:

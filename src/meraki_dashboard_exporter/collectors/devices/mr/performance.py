@@ -27,6 +27,11 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _dict_keys(value: Any) -> list[str]:
+    """Return dict keys for diagnostics without logging metric values."""
+    return [str(key) for key in value] if isinstance(value, dict) else []
+
+
 def _response_summary(response: Any) -> dict[str, Any]:
     """Build a safe API response summary without logging values."""
     data = response.get("items") if isinstance(response, dict) and "items" in response else response
@@ -35,7 +40,19 @@ def _response_summary(response: Any) -> dict[str, Any]:
         "response_type": type(response).__name__,
         "wrapped_items": isinstance(response, dict) and "items" in response,
         "item_count": len(data) if isinstance(data, list) else None,
-        "first_keys": list(first_item.keys()) if isinstance(first_item, dict) else [],
+        "first_keys": _dict_keys(first_item),
+        "first_network_keys": _dict_keys(
+            first_item.get("network") if isinstance(first_item, dict) else None
+        ),
+        "first_device_keys": _dict_keys(
+            first_item.get("device") if isinstance(first_item, dict) else None
+        ),
+        "first_upstream_keys": _dict_keys(
+            first_item.get("upstream") if isinstance(first_item, dict) else None
+        ),
+        "first_downstream_keys": _dict_keys(
+            first_item.get("downstream") if isinstance(first_item, dict) else None
+        ),
     }
 
 
@@ -484,19 +501,61 @@ class MRPerformanceCollector:
             logger.info(
                 "Successfully fetched MR ethernet status",
                 org_id=org_id,
+                response_type=type(ethernet_statuses).__name__,
+                wrapped_items=isinstance(ethernet_statuses, dict) and "items" in ethernet_statuses,
                 device_count=len(ethernet_data) if ethernet_data else 0,
-                first_keys=list(ethernet_data[0].keys()) if ethernet_data else [],
+                first_keys=_dict_keys(ethernet_data[0] if ethernet_data else None),
+                first_network_keys=_dict_keys(
+                    ethernet_data[0].get("network") if ethernet_data else None
+                ),
+                first_power_keys=_dict_keys(
+                    ethernet_data[0].get("power") if ethernet_data else None
+                ),
+                first_aggregation_keys=_dict_keys(
+                    ethernet_data[0].get("aggregation") if ethernet_data else None
+                ),
+                first_port_keys=_dict_keys(
+                    ethernet_data[0].get("ports", [None])[0]
+                    if ethernet_data and ethernet_data[0].get("ports")
+                    else None
+                ),
+                first_port_link_negotiation_keys=_dict_keys(
+                    ethernet_data[0].get("ports", [{}])[0].get("linkNegotiation")
+                    if ethernet_data and ethernet_data[0].get("ports")
+                    else None
+                ),
+                first_port_aggregation_keys=_dict_keys(
+                    ethernet_data[0].get("ports", [{}])[0].get("aggregation")
+                    if ethernet_data and ethernet_data[0].get("ports")
+                    else None
+                ),
             )
 
+            processed_count = 0
+            missing_serial_count = 0
+            power_info_set_count = 0
+            ac_power_set_count = 0
+            poe_power_set_count = 0
+            port_count = 0
+            port_poe_info_set_count = 0
+            link_negotiation_info_set_count = 0
+            link_negotiation_speed_count = 0
+            link_negotiation_speed_set_count = 0
             aggregation_speed_count = 0
+            speed_metric_count = 0
             device_aggregation_count = 0
             port_aggregation_count = 0
             aggregation_enabled_count = 0
+            device_aggregation_speed_count = 0
+            fallback_aggregation_speed_count = 0
             aggregation_missing_speed_count = 0
+            aggregation_speed_set_count = 0
 
             # Process each device's ethernet status
             for device_status in ethernet_data:
                 serial = device_status.get("serial", "")
+                if not serial:
+                    missing_serial_count += 1
                 device_info = device_lookup.get(serial, {"serial": serial})
 
                 # Get device data from API response and merge with lookup
@@ -523,6 +582,7 @@ class MRPerformanceCollector:
                         power_labels,
                         1,
                     )
+                    power_info_set_count += 1
 
                 # AC power status - using P3.2 pattern
                 ac_info = device_status.get("power", {}).get("ac", {})
@@ -532,6 +592,7 @@ class MRPerformanceCollector:
                     device_labels,
                     1 if ac_connected else 0,
                 )
+                ac_power_set_count += 1
 
                 # PoE power status - using P3.2 pattern
                 poe_info = device_status.get("power", {}).get("poe", {})
@@ -541,6 +602,7 @@ class MRPerformanceCollector:
                     device_labels,
                     1 if poe_connected else 0,
                 )
+                poe_power_set_count += 1
 
                 # Process port information
                 ports = device_status.get("ports", [])
@@ -552,6 +614,7 @@ class MRPerformanceCollector:
                 total_speed = 0
 
                 for port in ports:
+                    port_count += 1
                     port_name = port.get("name", "")
 
                     # PoE information
@@ -569,6 +632,7 @@ class MRPerformanceCollector:
                             poe_labels,
                             1,
                         )
+                        port_poe_info_set_count += 1
 
                     # Link negotiation information
                     link_negotiation = port.get("linkNegotiation", {})
@@ -586,9 +650,11 @@ class MRPerformanceCollector:
                             link_labels,
                             1,
                         )
+                        link_negotiation_info_set_count += 1
 
                     speed = link_negotiation.get("speed")
                     if speed:
+                        link_negotiation_speed_count += 1
                         speed_labels = create_device_labels(
                             device_info,
                             org_id=org_id,
@@ -600,6 +666,7 @@ class MRPerformanceCollector:
                             speed_labels,
                             speed,
                         )
+                        link_negotiation_speed_set_count += 1
 
                     # Track aggregation
                     if port.get("aggregation", {}).get("enabled"):
@@ -619,8 +686,11 @@ class MRPerformanceCollector:
                 )
 
                 speed_value = aggregation_speed
+                if speed_value is not None:
+                    device_aggregation_speed_count += 1
                 if speed_value is None and aggregation_enabled and total_speed > 0:
                     speed_value = total_speed
+                    fallback_aggregation_speed_count += 1
 
                 if aggregation_enabled and speed_value is not None:
                     self.parent._set_metric(
@@ -629,16 +699,35 @@ class MRPerformanceCollector:
                         speed_value,
                     )
                     aggregation_speed_count += 1
+                    speed_metric_count += 1
+                    aggregation_speed_set_count += 1
                 elif aggregation_enabled:
                     aggregation_missing_speed_count += 1
+
+                processed_count += 1
 
             logger.info(
                 "Processed MR ethernet aggregation data",
                 org_id=org_id,
+                input_count=len(ethernet_data),
+                processed_count=processed_count,
+                missing_serial_count=missing_serial_count,
+                power_info_set_count=power_info_set_count,
+                ac_power_set_count=ac_power_set_count,
+                poe_power_set_count=poe_power_set_count,
+                port_count=port_count,
+                port_poe_info_set_count=port_poe_info_set_count,
+                link_negotiation_info_set_count=link_negotiation_info_set_count,
+                link_negotiation_speed_count=link_negotiation_speed_count,
+                link_negotiation_speed_set_count=link_negotiation_speed_set_count,
                 device_aggregation_count=device_aggregation_count,
                 port_aggregation_count=port_aggregation_count,
                 aggregation_enabled_count=aggregation_enabled_count,
+                device_aggregation_speed_count=device_aggregation_speed_count,
+                fallback_aggregation_speed_count=fallback_aggregation_speed_count,
                 aggregation_speed_count=aggregation_speed_count,
+                speed_metric_count=speed_metric_count,
+                aggregation_speed_set_count=aggregation_speed_set_count,
                 aggregation_missing_speed_count=aggregation_missing_speed_count,
             )
 
@@ -721,6 +810,36 @@ class MRPerformanceCollector:
     ) -> None:
         """Process network-level packet loss metrics."""
         emitted_count = 0
+        downstream_total_count = 0
+        downstream_lost_count = 0
+        downstream_loss_percent_count = 0
+        downstream_loss_percent_set_count = 0
+        upstream_total_count = 0
+        upstream_lost_count = 0
+        upstream_loss_percent_count = 0
+        upstream_loss_percent_set_count = 0
+        combined_total_packets_count = 0
+        combined_lost_packets_count = 0
+        combined_loss_percent_count = 0
+        combined_loss_percent_set_count = 0
+        combined_missing_total_count = 0
+        combined_zero_total_count = 0
+        metric_set_count = 0
+        metric_skip_none_count = 0
+        metric_not_set_count = 0
+        first_item = network_packet_loss[0] if network_packet_loss else {}
+
+        def set_and_track(metric_name: str, labels: dict[str, str], value: float | None) -> bool:
+            nonlocal metric_set_count, metric_skip_none_count, metric_not_set_count
+            if value is None:
+                metric_skip_none_count += 1
+            if self._set_packet_metric_value(metric_name, labels, value):
+                metric_set_count += 1
+                return True
+            if value is not None:
+                metric_not_set_count += 1
+            return False
+
         for network_data in network_packet_loss:
             network_id, network_name = self._extract_network_info(network_data)
 
@@ -736,63 +855,89 @@ class MRPerformanceCollector:
             downstream_total = downstream.get("total")
             downstream_lost = downstream.get("lost")
             downstream_loss_percent = downstream.get("lossPercentage")
+            downstream_total_count += downstream_total is not None
+            downstream_lost_count += downstream_lost is not None
+            downstream_loss_percent_count += downstream_loss_percent is not None
 
-            self._set_packet_metric_value(
-                "_mr_network_packets_downstream_total", network_labels, downstream_total
-            )
-            self._set_packet_metric_value(
-                "_mr_network_packets_downstream_lost", network_labels, downstream_lost
-            )
-            self._set_packet_metric_value(
+            set_and_track("_mr_network_packets_downstream_total", network_labels, downstream_total)
+            set_and_track("_mr_network_packets_downstream_lost", network_labels, downstream_lost)
+            if set_and_track(
                 "_mr_network_packet_loss_downstream_percent",
                 network_labels,
                 downstream_loss_percent,
-            )
+            ):
+                downstream_loss_percent_set_count += 1
 
             # Upstream metrics
             upstream = network_data.get("upstream", {})
             upstream_total = upstream.get("total")
             upstream_lost = upstream.get("lost")
             upstream_loss_percent = upstream.get("lossPercentage")
+            upstream_total_count += upstream_total is not None
+            upstream_lost_count += upstream_lost is not None
+            upstream_loss_percent_count += upstream_loss_percent is not None
 
-            self._set_packet_metric_value(
-                "_mr_network_packets_upstream_total", network_labels, upstream_total
-            )
-            self._set_packet_metric_value(
-                "_mr_network_packets_upstream_lost", network_labels, upstream_lost
-            )
-            self._set_packet_metric_value(
+            set_and_track("_mr_network_packets_upstream_total", network_labels, upstream_total)
+            set_and_track("_mr_network_packets_upstream_lost", network_labels, upstream_lost)
+            if set_and_track(
                 "_mr_network_packet_loss_upstream_percent",
                 network_labels,
                 upstream_loss_percent,
-            )
+            ):
+                upstream_loss_percent_set_count += 1
 
             # Combined metrics
             if downstream_total is not None and upstream_total is not None:
                 total_packets = downstream_total + upstream_total
                 total_lost = (downstream_lost or 0) + (upstream_lost or 0)
+                combined_total_packets_count += 1
+                combined_lost_packets_count += 1
 
-                self._set_packet_metric_value(
-                    "_mr_network_packets_total", network_labels, total_packets
-                )
-                self._set_packet_metric_value(
-                    "_mr_network_packets_lost_total", network_labels, total_lost
-                )
+                set_and_track("_mr_network_packets_total", network_labels, total_packets)
+                set_and_track("_mr_network_packets_lost_total", network_labels, total_lost)
 
                 if total_packets > 0:
                     total_loss_percent = (total_lost / total_packets) * 100
-                    self._set_packet_metric_value(
+                    if set_and_track(
                         "_mr_network_packet_loss_total_percent",
                         network_labels,
                         total_loss_percent,
-                    )
+                    ):
+                        combined_loss_percent_set_count += 1
+                    combined_loss_percent_count += 1
+                else:
+                    combined_zero_total_count += 1
+            else:
+                combined_missing_total_count += 1
 
             emitted_count += 1
 
         logger.info(
             "Processed MR network packet loss metrics",
             org_id=org_id,
+            input_count=len(network_packet_loss),
             metric_group_count=emitted_count,
+            downstream_total_count=downstream_total_count,
+            downstream_lost_count=downstream_lost_count,
+            downstream_loss_percent_count=downstream_loss_percent_count,
+            downstream_loss_percent_set_count=downstream_loss_percent_set_count,
+            upstream_total_count=upstream_total_count,
+            upstream_lost_count=upstream_lost_count,
+            upstream_loss_percent_count=upstream_loss_percent_count,
+            upstream_loss_percent_set_count=upstream_loss_percent_set_count,
+            combined_total_packets_count=combined_total_packets_count,
+            combined_lost_packets_count=combined_lost_packets_count,
+            combined_loss_percent_count=combined_loss_percent_count,
+            combined_loss_percent_set_count=combined_loss_percent_set_count,
+            combined_missing_total_count=combined_missing_total_count,
+            combined_zero_total_count=combined_zero_total_count,
+            metric_set_count=metric_set_count,
+            metric_skip_none_count=metric_skip_none_count,
+            metric_not_set_count=metric_not_set_count,
+            first_keys=_dict_keys(first_item),
+            first_network_keys=_dict_keys(first_item.get("network")),
+            first_upstream_keys=_dict_keys(first_item.get("upstream")),
+            first_downstream_keys=_dict_keys(first_item.get("downstream")),
         )
 
     def _process_device_packet_loss(
@@ -805,6 +950,36 @@ class MRPerformanceCollector:
         """Process AP-level packet loss metrics."""
         emitted_count = 0
         skipped_count = 0
+        missing_serial_count = 0
+        downstream_total_count = 0
+        downstream_lost_count = 0
+        downstream_loss_percent_count = 0
+        downstream_loss_percent_set_count = 0
+        upstream_total_count = 0
+        upstream_lost_count = 0
+        upstream_loss_percent_count = 0
+        upstream_loss_percent_set_count = 0
+        combined_total_packets_count = 0
+        combined_lost_packets_count = 0
+        combined_loss_percent_count = 0
+        combined_loss_percent_set_count = 0
+        combined_missing_total_count = 0
+        combined_zero_total_count = 0
+        metric_set_count = 0
+        metric_skip_none_count = 0
+        metric_not_set_count = 0
+        first_item = device_packet_loss[0] if device_packet_loss else {}
+
+        def set_and_track(metric_name: str, labels: dict[str, str], value: float | None) -> bool:
+            nonlocal metric_set_count, metric_skip_none_count, metric_not_set_count
+            if value is None:
+                metric_skip_none_count += 1
+            if self._set_packet_metric_value(metric_name, labels, value):
+                metric_set_count += 1
+                return True
+            if value is not None:
+                metric_not_set_count += 1
+            return False
 
         for device_data in device_packet_loss:
             device = device_data.get("device", {})
@@ -812,6 +987,7 @@ class MRPerformanceCollector:
                 device = {}
             serial = device_data.get("serial") or device.get("serial", "")
             if not serial:
+                missing_serial_count += 1
                 skipped_count += 1
                 continue
 
@@ -837,62 +1013,90 @@ class MRPerformanceCollector:
             dev_downstream_total = dev_downstream.get("total")
             dev_downstream_lost = dev_downstream.get("lost")
             dev_downstream_loss_percent = dev_downstream.get("lossPercentage")
+            downstream_total_count += dev_downstream_total is not None
+            downstream_lost_count += dev_downstream_lost is not None
+            downstream_loss_percent_count += dev_downstream_loss_percent is not None
 
-            self._set_packet_metric_value(
-                "_mr_packets_downstream_total", device_labels, dev_downstream_total
-            )
-            self._set_packet_metric_value(
-                "_mr_packets_downstream_lost", device_labels, dev_downstream_lost
-            )
-            self._set_packet_metric_value(
+            set_and_track("_mr_packets_downstream_total", device_labels, dev_downstream_total)
+            set_and_track("_mr_packets_downstream_lost", device_labels, dev_downstream_lost)
+            if set_and_track(
                 "_mr_packet_loss_downstream_percent",
                 device_labels,
                 dev_downstream_loss_percent,
-            )
+            ):
+                downstream_loss_percent_set_count += 1
 
             # Device upstream metrics
             dev_upstream = device_data.get("upstream", {})
             dev_upstream_total = dev_upstream.get("total")
             dev_upstream_lost = dev_upstream.get("lost")
             dev_upstream_loss_percent = dev_upstream.get("lossPercentage")
+            upstream_total_count += dev_upstream_total is not None
+            upstream_lost_count += dev_upstream_lost is not None
+            upstream_loss_percent_count += dev_upstream_loss_percent is not None
 
-            self._set_packet_metric_value(
-                "_mr_packets_upstream_total", device_labels, dev_upstream_total
-            )
-            self._set_packet_metric_value(
-                "_mr_packets_upstream_lost", device_labels, dev_upstream_lost
-            )
-            self._set_packet_metric_value(
+            set_and_track("_mr_packets_upstream_total", device_labels, dev_upstream_total)
+            set_and_track("_mr_packets_upstream_lost", device_labels, dev_upstream_lost)
+            if set_and_track(
                 "_mr_packet_loss_upstream_percent", device_labels, dev_upstream_loss_percent
-            )
+            ):
+                upstream_loss_percent_set_count += 1
 
             # Device combined metrics
             if dev_downstream_total is not None and dev_upstream_total is not None:
                 dev_total_packets = dev_downstream_total + dev_upstream_total
                 dev_total_lost = (dev_downstream_lost or 0) + (dev_upstream_lost or 0)
+                combined_total_packets_count += 1
+                combined_lost_packets_count += 1
 
-                self._set_packet_metric_value(
-                    "_mr_packets_total", device_labels, dev_total_packets
-                )
-                self._set_packet_metric_value(
-                    "_mr_packets_lost_total", device_labels, dev_total_lost
-                )
+                set_and_track("_mr_packets_total", device_labels, dev_total_packets)
+                set_and_track("_mr_packets_lost_total", device_labels, dev_total_lost)
 
                 if dev_total_packets > 0:
                     dev_total_loss_percent = (dev_total_lost / dev_total_packets) * 100
-                    self._set_packet_metric_value(
+                    if set_and_track(
                         "_mr_packet_loss_total_percent",
                         device_labels,
                         dev_total_loss_percent,
-                    )
+                    ):
+                        combined_loss_percent_set_count += 1
+                    combined_loss_percent_count += 1
+                else:
+                    combined_zero_total_count += 1
+            else:
+                combined_missing_total_count += 1
 
             emitted_count += 1
 
         logger.info(
             "Processed MR device packet loss metrics",
             org_id=org_id,
+            input_count=len(device_packet_loss),
             metric_group_count=emitted_count,
             skipped_count=skipped_count,
+            missing_serial_count=missing_serial_count,
+            downstream_total_count=downstream_total_count,
+            downstream_lost_count=downstream_lost_count,
+            downstream_loss_percent_count=downstream_loss_percent_count,
+            downstream_loss_percent_set_count=downstream_loss_percent_set_count,
+            upstream_total_count=upstream_total_count,
+            upstream_lost_count=upstream_lost_count,
+            upstream_loss_percent_count=upstream_loss_percent_count,
+            upstream_loss_percent_set_count=upstream_loss_percent_set_count,
+            combined_total_packets_count=combined_total_packets_count,
+            combined_lost_packets_count=combined_lost_packets_count,
+            combined_loss_percent_count=combined_loss_percent_count,
+            combined_loss_percent_set_count=combined_loss_percent_set_count,
+            combined_missing_total_count=combined_missing_total_count,
+            combined_zero_total_count=combined_zero_total_count,
+            metric_set_count=metric_set_count,
+            metric_skip_none_count=metric_skip_none_count,
+            metric_not_set_count=metric_not_set_count,
+            first_keys=_dict_keys(first_item),
+            first_network_keys=_dict_keys(first_item.get("network")),
+            first_device_keys=_dict_keys(first_item.get("device")),
+            first_upstream_keys=_dict_keys(first_item.get("upstream")),
+            first_downstream_keys=_dict_keys(first_item.get("downstream")),
         )
 
     def _extract_network_info(self, data: dict[str, Any]) -> tuple[str, str]:
@@ -1111,14 +1315,63 @@ class MRPerformanceCollector:
                         operation=endpoint,
                     ),
                 )
+                first_cpu_item = cpu_data[0] if cpu_data else {}
+                first_series = (
+                    first_cpu_item.get("series") if isinstance(first_cpu_item, dict) else None
+                )
+                first_history = (
+                    first_cpu_item.get("history") if isinstance(first_cpu_item, dict) else None
+                )
+                logger.info(
+                    "Parsed MR CPU load response",
+                    org_id=org_id,
+                    endpoint=endpoint,
+                    response_count=len(cpu_data),
+                    first_keys=_dict_keys(first_cpu_item),
+                    first_device_keys=_dict_keys(first_cpu_item.get("device")),
+                    first_series_count=len(first_series)
+                    if isinstance(first_series, list)
+                    else None,
+                    first_series_keys=_dict_keys(first_series[0])
+                    if isinstance(first_series, list) and first_series
+                    else [],
+                    first_history_count=len(first_history)
+                    if isinstance(first_history, list)
+                    else None,
+                    first_history_keys=_dict_keys(first_history[0])
+                    if isinstance(first_history, list) and first_history
+                    else [],
+                )
 
             emitted_count = 0
+            metric_set_count = 0
             missing_serial_count = 0
             unknown_device_count = 0
             missing_cpu_value_count = 0
+            series_count = 0
+            history_count = 0
+            series_cpu_load5_count = 0
+            series_load_count = 0
+            history_cpu_load5_count = 0
+            history_load_count = 0
 
             # Process CPU data for each device
             for item in cpu_data:
+                series = item.get("series")
+                if isinstance(series, list) and series:
+                    series_count += 1
+                    latest_series = series[-1]
+                    if isinstance(latest_series, dict):
+                        series_cpu_load5_count += latest_series.get("cpuLoad5") is not None
+                        series_load_count += latest_series.get("load") is not None
+                history = item.get("history")
+                if isinstance(history, list) and history:
+                    history_count += 1
+                    latest_history = history[-1]
+                    if isinstance(latest_history, dict):
+                        history_cpu_load5_count += latest_history.get("cpuLoad5") is not None
+                        history_load_count += latest_history.get("load") is not None
+
                 serial = self._extract_cpu_serial(item)
                 if not serial:
                     missing_serial_count += 1
@@ -1139,6 +1392,7 @@ class MRPerformanceCollector:
                 # Process device CPU data
                 self._process_device_cpu_data(device, cpu_value, org_id, org_name)
                 emitted_count += 1
+                metric_set_count += 1
 
             logger.info(
                 "Processed MR CPU load batch",
@@ -1146,9 +1400,16 @@ class MRPerformanceCollector:
                 serial_count=len(serials),
                 response_count=len(cpu_data),
                 metric_count=emitted_count,
+                metric_set_count=metric_set_count,
                 missing_serial_count=missing_serial_count,
                 unknown_device_count=unknown_device_count,
                 missing_cpu_value_count=missing_cpu_value_count,
+                series_count=series_count,
+                history_count=history_count,
+                series_cpu_load5_count=series_cpu_load5_count,
+                series_load_count=series_load_count,
+                history_cpu_load5_count=history_cpu_load5_count,
+                history_load_count=history_load_count,
             )
 
             return cpu_data
@@ -1240,7 +1501,7 @@ class MRPerformanceCollector:
 
     def _set_packet_metric_value(
         self, metric_name: str, labels: dict[str, str], value: float | None
-    ) -> None:
+    ) -> bool:
         """Set packet metric value with retention logic for total packet counters.
 
         For packet loss metrics, 0 is a valid value. For total packet counters,
@@ -1254,6 +1515,11 @@ class MRPerformanceCollector:
             Labels to apply to the metric.
         value : float | None
             Value to set. May be None if API returned null.
+
+        Returns
+        -------
+        bool
+            True when the metric was set on the Prometheus registry.
 
         """
         # Create a cache key from metric name and sorted labels
@@ -1282,3 +1548,6 @@ class MRPerformanceCollector:
         metric = getattr(self, metric_name, None)
         if metric and value is not None:
             self.parent._set_metric(metric, labels, value)
+            return True
+
+        return False
