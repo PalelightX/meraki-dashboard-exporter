@@ -547,9 +547,7 @@ class DeviceCollector(MetricCollector):
                     org_name=org_name,
                     ms_device_count=len(ms_devices),
                 )
-                spread_window = self._get_smoothing_window()
-                min_delay = self.settings.api.smoothing_min_batch_delay
-                max_delay = self.settings.api.smoothing_max_batch_delay
+                ms_batch_schedule = self._get_ms_phase_batch_schedule()
                 used_fallback = False
 
                 if self.settings.api.ms_port_status_use_org_endpoint:
@@ -568,11 +566,7 @@ class DeviceCollector(MetricCollector):
                             ms_devices,
                             self._collect_ms_device_with_timeout,
                             batch_size=self.settings.api.device_batch_size,
-                            delay_between_batches=self.settings.api.batch_delay,
-                            spread_over_seconds=spread_window,
-                            initial_delay=self._get_smoothing_offset(f"{org_id}:ms_devices"),
-                            min_batch_delay=min_delay,
-                            max_batch_delay=max_delay,
+                            **ms_batch_schedule,
                             item_description="MS device",
                             error_context_func=lambda device: {"serial": device["serial"]},
                         )
@@ -591,11 +585,7 @@ class DeviceCollector(MetricCollector):
                                 usage_devices,
                                 self.ms_collector.collect_device_port_usage_metrics,
                                 batch_size=self.settings.api.device_batch_size,
-                                delay_between_batches=self.settings.api.batch_delay,
-                                spread_over_seconds=spread_window,
-                                initial_delay=self._get_smoothing_offset(f"{org_id}:ms_usage"),
-                                min_batch_delay=min_delay,
-                                max_batch_delay=max_delay,
+                                **ms_batch_schedule,
                                 item_description="MS port usage",
                                 error_context_func=lambda device: {"serial": device["serial"]},
                             )
@@ -606,11 +596,7 @@ class DeviceCollector(MetricCollector):
                         ms_devices,
                         self._collect_ms_device_with_timeout,
                         batch_size=self.settings.api.device_batch_size,
-                        delay_between_batches=self.settings.api.batch_delay,
-                        spread_over_seconds=spread_window,
-                        initial_delay=self._get_smoothing_offset(f"{org_id}:ms_devices"),
-                        min_batch_delay=min_delay,
-                        max_batch_delay=max_delay,
+                        **ms_batch_schedule,
                         item_description="MS device",
                         error_context_func=lambda device: {"serial": device["serial"]},
                     )
@@ -621,11 +607,7 @@ class DeviceCollector(MetricCollector):
                         ms_devices,
                         self.ms_collector._collect_packet_statistics,
                         batch_size=self.settings.api.device_batch_size,
-                        delay_between_batches=self.settings.api.batch_delay,
-                        spread_over_seconds=spread_window,
-                        initial_delay=self._get_smoothing_offset(f"{org_id}:ms_packets"),
-                        min_batch_delay=min_delay,
-                        max_batch_delay=max_delay,
+                        **ms_batch_schedule,
                         item_description="MS packet stats",
                         error_context_func=lambda device: {"serial": device["serial"]},
                     )
@@ -820,6 +802,24 @@ class DeviceCollector(MetricCollector):
 
         """
         await self.ms_collector.collect(device)
+
+    def _get_ms_phase_batch_schedule(self) -> dict[str, float | None]:
+        """Return batch timing for MS per-device phases.
+
+        DeviceCollector already applies smoothing at the collector level. Applying
+        additional per-phase offsets inside MS collection can consume most of the
+        timeout budget before MR collection starts, without reducing API volume.
+
+        Keep the normal inter-batch delay so requests are still paced, and rely on
+        the shared rate limiter for finer-grained protection against 429 responses.
+        """
+        return {
+            "delay_between_batches": self.settings.api.batch_delay,
+            "spread_over_seconds": None,
+            "initial_delay": 0.0,
+            "min_batch_delay": None,
+            "max_batch_delay": None,
+        }
 
     @trace_method("collect.mr_metrics")
     async def _collect_mr_specific_metrics(

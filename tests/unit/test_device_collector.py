@@ -94,6 +94,18 @@ class TestDeviceCollector(BaseCollectorTest):
         cache_key = "_mr_packets_downstream_lost:name=AP1:network_id=N_123:network_name=Test Network:serial=Q2KD-XXXX"
         assert collector._packet_metrics_cache[cache_key] == 0
 
+    def test_ms_phase_batch_schedule_avoids_nested_smoothing(self, collector):
+        """Test MS per-device phases do not add extra smoothing delays."""
+        collector.settings.api.batch_delay = 0.75
+
+        assert collector._get_ms_phase_batch_schedule() == {
+            "delay_between_batches": 0.75,
+            "spread_over_seconds": None,
+            "initial_delay": 0.0,
+            "min_batch_delay": None,
+            "max_batch_delay": None,
+        }
+
     async def test_ssid_status_collection(self, collector, mock_api_builder, metrics):
         """Test SSID status metric collection."""
         # Set up test data
