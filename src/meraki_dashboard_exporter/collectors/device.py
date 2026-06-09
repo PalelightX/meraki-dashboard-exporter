@@ -551,10 +551,21 @@ class DeviceCollector(MetricCollector):
                 used_fallback = False
 
                 if self.settings.api.ms_port_status_use_org_endpoint:
+                    ms_status_start_time = asyncio.get_event_loop().time()
                     status_result = await self.ms_collector.collect_port_statuses_by_switch(
                         org_id,
                         org_name,
                         ms_devices,
+                    )
+                    logger.info(
+                        "Completed MS org port status collection",
+                        org_id=org_id,
+                        org_name=org_name,
+                        ms_device_count=len(ms_devices),
+                        used_org_endpoint=bool(status_result),
+                        duration_seconds=round(
+                            asyncio.get_event_loop().time() - ms_status_start_time, 2
+                        ),
                     )
                     if not status_result:
                         used_fallback = True
@@ -562,6 +573,7 @@ class DeviceCollector(MetricCollector):
                             "Org-level switch port status collection failed; falling back to per-device status",
                             org_id=org_id,
                         )
+                        ms_fallback_start_time = asyncio.get_event_loop().time()
                         await process_in_batches_with_errors(
                             ms_devices,
                             self._collect_ms_device_with_timeout,
@@ -569,6 +581,15 @@ class DeviceCollector(MetricCollector):
                             **ms_batch_schedule,
                             item_description="MS device",
                             error_context_func=lambda device: {"serial": device["serial"]},
+                        )
+                        logger.info(
+                            "Completed MS fallback per-device status collection",
+                            org_id=org_id,
+                            org_name=org_name,
+                            ms_device_count=len(ms_devices),
+                            duration_seconds=round(
+                                asyncio.get_event_loop().time() - ms_fallback_start_time, 2
+                            ),
                         )
 
                     if not used_fallback:
@@ -581,6 +602,7 @@ class DeviceCollector(MetricCollector):
                         ]
 
                         if usage_devices:
+                            ms_usage_start_time = asyncio.get_event_loop().time()
                             await process_in_batches_with_errors(
                                 usage_devices,
                                 self.ms_collector.collect_device_port_usage_metrics,
@@ -589,9 +611,20 @@ class DeviceCollector(MetricCollector):
                                 item_description="MS port usage",
                                 error_context_func=lambda device: {"serial": device["serial"]},
                             )
+                            logger.info(
+                                "Completed MS port usage collection",
+                                org_id=org_id,
+                                org_name=org_name,
+                                ms_device_count=len(ms_devices),
+                                usage_device_count=len(usage_devices),
+                                duration_seconds=round(
+                                    asyncio.get_event_loop().time() - ms_usage_start_time, 2
+                                ),
+                            )
                 else:
                     # Process devices in batches (configurable via device_batch_size)
                     used_fallback = True
+                    ms_fallback_start_time = asyncio.get_event_loop().time()
                     await process_in_batches_with_errors(
                         ms_devices,
                         self._collect_ms_device_with_timeout,
@@ -600,9 +633,24 @@ class DeviceCollector(MetricCollector):
                         item_description="MS device",
                         error_context_func=lambda device: {"serial": device["serial"]},
                     )
+                    logger.info(
+                        "Completed MS fallback per-device status collection",
+                        org_id=org_id,
+                        org_name=org_name,
+                        ms_device_count=len(ms_devices),
+                        duration_seconds=round(
+                            asyncio.get_event_loop().time() - ms_fallback_start_time, 2
+                        ),
+                    )
 
                 # Collect packet statistics with smoothing and interval gating
                 if not used_fallback:
+                    packet_devices = [
+                        device
+                        for device in ms_devices
+                        if self.ms_collector._should_collect_packet_stats(device.get("serial", ""))
+                    ]
+                    ms_packet_start_time = asyncio.get_event_loop().time()
                     await process_in_batches_with_errors(
                         ms_devices,
                         self.ms_collector._collect_packet_statistics,
@@ -610,6 +658,16 @@ class DeviceCollector(MetricCollector):
                         **ms_batch_schedule,
                         item_description="MS packet stats",
                         error_context_func=lambda device: {"serial": device["serial"]},
+                    )
+                    logger.info(
+                        "Completed MS packet statistics collection",
+                        org_id=org_id,
+                        org_name=org_name,
+                        ms_device_count=len(ms_devices),
+                        packet_device_count=len(packet_devices),
+                        duration_seconds=round(
+                            asyncio.get_event_loop().time() - ms_packet_start_time, 2
+                        ),
                     )
                 logger.info(
                     "Completed MS device metrics collection",
@@ -845,8 +903,15 @@ class DeviceCollector(MetricCollector):
 
             # Collect wireless client counts (org-wide - replaces per-device getDeviceWirelessStatus)
             try:
+                phase_start_time = asyncio.get_event_loop().time()
                 await self.mr_collector.collect_wireless_clients(
                     org_id, org_name, self._device_lookup
+                )
+                logger.info(
+                    "Completed MR wireless client collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - phase_start_time, 2),
                 )
             except Exception:
                 logger.exception("Failed to collect wireless client counts")
@@ -854,41 +919,84 @@ class DeviceCollector(MetricCollector):
             # Collect connection stats (network-level - replaces per-device getDeviceWirelessConnectionStats)
             if networks:
                 try:
+                    phase_start_time = asyncio.get_event_loop().time()
                     await self.mr_collector.collect_connection_stats(
                         org_id, org_name, networks, self._device_lookup
+                    )
+                    logger.info(
+                        "Completed MR connection stats collection",
+                        org_id=org_id,
+                        org_name=org_name,
+                        network_count=len(networks),
+                        duration_seconds=round(asyncio.get_event_loop().time() - phase_start_time, 2),
                     )
                 except Exception:
                     logger.exception("Failed to collect MR connection stats")
 
             # Collect MR ethernet status
             try:
+                phase_start_time = asyncio.get_event_loop().time()
                 await self.mr_collector.collect_ethernet_status(
                     org_id, org_name, self._device_lookup
+                )
+                logger.info(
+                    "Completed MR ethernet status collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - phase_start_time, 2),
                 )
             except Exception:
                 logger.exception("Failed to collect MR ethernet status")
 
             # Collect MR packet loss metrics
             try:
+                phase_start_time = asyncio.get_event_loop().time()
                 await self.mr_collector.collect_packet_loss(org_id, org_name, self._device_lookup)
+                logger.info(
+                    "Completed MR packet loss collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - phase_start_time, 2),
+                )
             except Exception:
                 logger.exception("Failed to collect MR packet loss metrics")
 
             # Collect MR CPU load metrics
             try:
+                phase_start_time = asyncio.get_event_loop().time()
                 await self.mr_collector.collect_cpu_load(org_id, org_name, devices)
+                logger.info(
+                    "Completed MR CPU load collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - phase_start_time, 2),
+                )
             except Exception:
                 logger.exception("Failed to collect MR CPU load metrics")
 
             # Collect MR SSID status metrics
             try:
+                phase_start_time = asyncio.get_event_loop().time()
                 await self.mr_collector.collect_ssid_status(org_id, org_name)
+                logger.info(
+                    "Completed MR SSID status collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - phase_start_time, 2),
+                )
             except Exception:
                 logger.exception("Failed to collect MR SSID status metrics")
 
             # Collect MR SSID usage metrics
             try:
+                phase_start_time = asyncio.get_event_loop().time()
                 await self.mr_collector.collect_ssid_usage(org_id, org_name)
+                logger.info(
+                    "Completed MR SSID usage collection",
+                    org_id=org_id,
+                    org_name=org_name,
+                    duration_seconds=round(asyncio.get_event_loop().time() - phase_start_time, 2),
+                )
             except Exception:
                 logger.exception("Failed to collect MR SSID usage metrics")
 
