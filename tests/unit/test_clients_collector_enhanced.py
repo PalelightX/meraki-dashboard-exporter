@@ -237,6 +237,50 @@ class TestClientsCollectorEnhanced(BaseCollectorTest):
         # Verify partial success (some networks processed despite rate limit)
         self.assert_collector_success(collector, metrics)
 
+    async def test_process_network_batch_returns_summary_counts(self, collector, mock_api_builder):
+        """Test network batch processing returns summary counts for diagnostics."""
+        org = OrganizationFactory.create(org_id="123", name="Test Org")
+        supported_network = NetworkFactory.create(
+            network_id="N_WIFI",
+            name="Wireless Network",
+            org_id=org["id"],
+            product_types=["wireless"],
+        )
+        unsupported_network = NetworkFactory.create(
+            network_id="N_SM",
+            name="Systems Manager",
+            org_id=org["id"],
+            product_types=["systemsManager"],
+        )
+
+        api = (
+            mock_api_builder
+            .with_organizations([org])
+            .with_networks([supported_network, unsupported_network], org_id=org["id"])
+            .with_custom_response(
+                "getNetworkClients",
+                [ClientFactory.create(client_id="c1", mac="aa:bb:cc:dd:ee:01")],
+            )
+            .build()
+        )
+        self._update_collector_api(collector, api)
+
+        with patch.object(collector.dns_resolver, "resolve_multiple", return_value={}):
+            stats = await collector._process_network_batch(
+                org["id"],
+                org["name"],
+                [supported_network, unsupported_network],
+            )
+
+        assert stats == {
+            "input_network_count": 2,
+            "eligible_network_count": 1,
+            "skipped_network_count": 1,
+            "processed_network_count": 1,
+            "raw_client_count": 1,
+            "client_count": 1,
+        }
+
     async def test_collect_application_usage_with_empty_data(
         self, collector, mock_api_builder, metrics
     ):

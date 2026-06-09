@@ -340,16 +340,31 @@ class ClientsCollector(MetricCollector):
             logger.debug("Client collection is disabled, skipping")
             return
 
+        collection_start_time = time.monotonic()
         organizations = await self.api_helper.get_organizations()
 
         if not organizations:
             return
 
+        logger.info(
+            "Starting client metrics collection",
+            organization_count=len(organizations),
+        )
+
         await self._start_signal_quality_cycle()
+
+        organizations_processed = 0
+        total_networks_seen = 0
+        total_eligible_networks = 0
+        total_skipped_networks = 0
+        total_networks_processed = 0
+        total_raw_clients = 0
+        total_clients = 0
 
         for org in organizations:
             org_id = org["id"]
             org_name = org["name"]
+            org_start_time = time.monotonic()
 
             # Get all networks for the organization
             networks = await self.api_helper.get_organization_networks(org_id)
@@ -359,19 +374,49 @@ class ClientsCollector(MetricCollector):
 
             # Process networks directly without batching to avoid lambda issues
             # Since we're already processing one org at a time, this is fine
-            await self._process_network_batch(org_id, org_name, networks)
+            batch_stats = await self._process_network_batch(org_id, org_name, networks)
+            organizations_processed += 1
+            total_networks_seen += batch_stats["input_network_count"]
+            total_eligible_networks += batch_stats["eligible_network_count"]
+            total_skipped_networks += batch_stats["skipped_network_count"]
+            total_networks_processed += batch_stats["processed_network_count"]
+            total_raw_clients += batch_stats["raw_client_count"]
+            total_clients += batch_stats["client_count"]
+            logger.info(
+                "Completed client metrics collection for organization",
+                org_id=org_id,
+                org_name=org_name,
+                input_network_count=batch_stats["input_network_count"],
+                eligible_network_count=batch_stats["eligible_network_count"],
+                skipped_network_count=batch_stats["skipped_network_count"],
+                processed_network_count=batch_stats["processed_network_count"],
+                raw_client_count=batch_stats["raw_client_count"],
+                client_count=batch_stats["client_count"],
+                duration_seconds=round(time.monotonic() - org_start_time, 2),
+            )
 
         await self._finish_signal_quality_cycle()
 
         # Update DNS cache and client store metrics after all collections
         self._update_cache_metrics()
+        logger.info(
+            "Completed client metrics collection",
+            organizations_processed=organizations_processed,
+            input_network_count=total_networks_seen,
+            eligible_network_count=total_eligible_networks,
+            skipped_network_count=total_skipped_networks,
+            processed_network_count=total_networks_processed,
+            raw_client_count=total_raw_clients,
+            client_count=total_clients,
+            duration_seconds=round(time.monotonic() - collection_start_time, 2),
+        )
 
     async def _process_network_batch(
         self,
         org_id: str,
         org_name: str,
         networks: list[Any],
-    ) -> None:
+    ) -> dict[str, int]:
         """Process a batch of networks for client collection.
 
         Parameters
@@ -384,8 +429,16 @@ class ClientsCollector(MetricCollector):
             List of networks to process.
 
         """
+        batch_start_time = time.monotonic()
         if not networks:
-            return
+            return {
+                "input_network_count": 0,
+                "eligible_network_count": 0,
+                "skipped_network_count": 0,
+                "processed_network_count": 0,
+                "raw_client_count": 0,
+                "client_count": 0,
+            }
 
         networks = self._prepare_signal_quality_network_rotation(networks)
         eligible_networks, skipped_networks = self._filter_client_supported_networks(networks)
@@ -404,18 +457,44 @@ class ClientsCollector(MetricCollector):
                 skipped_product_types=skipped_product_types,
             )
         if not eligible_networks:
-            return
+            logger.info(
+                "Completed client network batch",
+                org_id=org_id,
+                org_name=org_name,
+                input_network_count=len(networks),
+                eligible_network_count=0,
+                skipped_network_count=len(skipped_networks),
+                processed_network_count=0,
+                raw_client_count=0,
+                client_count=0,
+                duration_seconds=round(time.monotonic() - batch_start_time, 2),
+            )
+            return {
+                "input_network_count": len(networks),
+                "eligible_network_count": 0,
+                "skipped_network_count": len(skipped_networks),
+                "processed_network_count": 0,
+                "raw_client_count": 0,
+                "client_count": 0,
+            }
 
         batch_size = self.settings.api.client_batch_size
         delay_between_batches = self.settings.api.batch_delay
+        processed_network_count = 0
+        total_raw_clients = 0
+        total_clients = 0
 
         async def _process_network(network: dict[str, Any]) -> None:
-            await self._collect_network_clients(
+            nonlocal processed_network_count, total_raw_clients, total_clients
+            network_stats = await self._collect_network_clients(
                 org_id,
                 org_name,
                 network["id"],
                 network["name"],
             )
+            processed_network_count += 1
+            total_raw_clients += network_stats["raw_client_count"]
+            total_clients += network_stats["client_count"]
 
         await process_in_batches_with_errors(
             eligible_networks,
@@ -434,6 +513,26 @@ class ClientsCollector(MetricCollector):
                 "network_name": network.get("name"),
             },
         )
+        logger.info(
+            "Completed client network batch",
+            org_id=org_id,
+            org_name=org_name,
+            input_network_count=len(networks),
+            eligible_network_count=len(eligible_networks),
+            skipped_network_count=len(skipped_networks),
+            processed_network_count=processed_network_count,
+            raw_client_count=total_raw_clients,
+            client_count=total_clients,
+            duration_seconds=round(time.monotonic() - batch_start_time, 2),
+        )
+        return {
+            "input_network_count": len(networks),
+            "eligible_network_count": len(eligible_networks),
+            "skipped_network_count": len(skipped_networks),
+            "processed_network_count": processed_network_count,
+            "raw_client_count": total_raw_clients,
+            "client_count": total_clients,
+        }
 
     def _filter_client_supported_networks(self, networks: list[Any]) -> tuple[list[Any], list[Any]]:
         """Skip networks where Meraki getNetworkClients is known to be unsupported."""
@@ -461,7 +560,7 @@ class ClientsCollector(MetricCollector):
         org_name: str,
         network_id: str,
         network_name: str,
-    ) -> None:
+    ) -> dict[str, int]:
         """Collect client data for a specific network.
 
         Parameters
@@ -483,6 +582,7 @@ class ClientsCollector(MetricCollector):
             network_id=network_id,
             network_name=network_name,
         )
+        network_start_time = time.monotonic()
 
         # Always fetch fresh data from API to get current status and usage
         # The cache is only used for hostname lookups, not for skipping API calls
@@ -504,7 +604,10 @@ class ClientsCollector(MetricCollector):
                 error=str(e),
             )
             self._track_error(ErrorCategory.API_CLIENT_ERROR)
-            return
+            return {
+                "raw_client_count": 0,
+                "client_count": 0,
+            }
 
         # Validate response format (handles API error responses like rate limits)
         clients_data = validate_response_format(
@@ -533,12 +636,24 @@ class ClientsCollector(MetricCollector):
         client_data = [(c.id, c.ip, c.description) for c in clients]
 
         # Resolve hostnames with client tracking
+        dns_start_time = time.monotonic()
         logger.debug(
             "Resolving hostnames for network",
             network_id=network_id,
             client_count=len(clients),
         )
         hostnames = await self.dns_resolver.resolve_multiple(client_data)
+        resolved_hostname_count = sum(1 for hostname in hostnames.values() if hostname)
+        logger.info(
+            "Completed client hostname resolution",
+            org_id=org_id,
+            network_id=network_id,
+            network_name=network_name,
+            client_count=len(clients),
+            hostname_count=len(hostnames),
+            resolved_hostname_count=resolved_hostname_count,
+            duration_seconds=round(time.monotonic() - dns_start_time, 2),
+        )
 
         # Update client store
         self.client_store.update_clients(
@@ -550,17 +665,69 @@ class ClientsCollector(MetricCollector):
         )
 
         # Update metrics
+        metrics_start_time = time.monotonic()
         await self._update_metrics(org_id, org_name, network_id, network_name, clients, hostnames)
+        logger.info(
+            "Completed client base metric update",
+            org_id=org_id,
+            network_id=network_id,
+            network_name=network_name,
+            client_count=len(clients),
+            duration_seconds=round(time.monotonic() - metrics_start_time, 2),
+        )
 
         # Collect application usage data
-        await self._collect_application_usage(
+        app_usage_start_time = time.monotonic()
+        app_usage_stats = await self._collect_application_usage(
             org_id, org_name, network_id, network_name, clients, hostnames
+        )
+        logger.info(
+            "Completed client application usage phase",
+            org_id=org_id,
+            network_id=network_id,
+            network_name=network_name,
+            client_count=len(clients),
+            application_usage_batch_count=app_usage_stats["batch_count"],
+            application_usage_record_count=app_usage_stats["usage_record_count"],
+            application_usage_metric_count=app_usage_stats["metric_count"],
+            application_usage_skipped=app_usage_stats["skipped"],
+            duration_seconds=round(time.monotonic() - app_usage_start_time, 2),
         )
 
         # Collect wireless signal quality data within the per-cycle budget.
-        await self._collect_wireless_signal_quality(
+        signal_quality_start_time = time.monotonic()
+        signal_quality_stats = await self._collect_wireless_signal_quality(
             org_id, org_name, network_id, network_name, clients, hostnames
         )
+        logger.info(
+            "Completed client signal quality phase",
+            org_id=org_id,
+            network_id=network_id,
+            network_name=network_name,
+            signal_quality_collected_count=signal_quality_stats["collected_count"],
+            signal_quality_metric_count=signal_quality_stats["metric_count"],
+            signal_quality_missing_data_count=signal_quality_stats["missing_data_count"],
+            signal_quality_error_count=signal_quality_stats["error_count"],
+            signal_quality_skipped=signal_quality_stats["skipped"],
+            duration_seconds=round(time.monotonic() - signal_quality_start_time, 2),
+        )
+        logger.info(
+            "Completed network client collection",
+            org_id=org_id,
+            org_name=org_name,
+            network_id=network_id,
+            network_name=network_name,
+            raw_client_count=len(clients_data),
+            client_count=len(clients),
+            resolved_hostname_count=resolved_hostname_count,
+            application_usage_metric_count=app_usage_stats["metric_count"],
+            signal_quality_metric_count=signal_quality_stats["metric_count"],
+            duration_seconds=round(time.monotonic() - network_start_time, 2),
+        )
+        return {
+            "raw_client_count": len(clients_data),
+            "client_count": len(clients),
+        }
 
     def _parse_network_clients(
         self,
@@ -952,6 +1119,17 @@ class ClientsCollector(MetricCollector):
                 network_id=network_id,
             )
 
+        logger.info(
+            "Completed client metric aggregation",
+            org_id=org_id,
+            network_id=network_id,
+            network_name=network_name,
+            client_count=len(clients),
+            capability_count=len(capabilities_count),
+            ssid_count=len(ssid_count),
+            vlan_count=len(vlan_count),
+        )
+
     @with_error_handling(
         operation="Collect application usage",
         continue_on_error=True,
@@ -966,7 +1144,7 @@ class ClientsCollector(MetricCollector):
         network_name: str,
         clients: list[NetworkClient],
         hostnames: dict[str, str | None],
-    ) -> None:
+    ) -> dict[str, int | bool]:
         """Collect application usage data for clients.
 
         Parameters
@@ -986,7 +1164,12 @@ class ClientsCollector(MetricCollector):
 
         """
         if not clients:
-            return
+            return {
+                "batch_count": 0,
+                "usage_record_count": 0,
+                "metric_count": 0,
+                "skipped": False,
+            }
 
         interval = self.settings.api.client_app_usage_interval
         last_run = self._last_app_usage_by_network.get(network_id, 0.0)
@@ -996,13 +1179,22 @@ class ClientsCollector(MetricCollector):
                 network_id=network_id,
                 interval_seconds=interval,
             )
-            return
+            return {
+                "batch_count": 0,
+                "usage_record_count": 0,
+                "metric_count": 0,
+                "skipped": True,
+            }
 
         # Extract client IDs
         client_ids = [client.id for client in clients]
 
         # Create a lookup map for client data
         client_map = {client.id: client for client in clients}
+        batch_count = 0
+        usage_record_count = 0
+        metric_count = 0
+        collection_start_time = time.monotonic()
 
         logger.debug(
             "Fetching application usage data",
@@ -1014,6 +1206,7 @@ class ClientsCollector(MetricCollector):
         batch_size = 1000
         for i in range(0, len(client_ids), batch_size):
             batch_ids = client_ids[i : i + batch_size]
+            batch_count += 1
 
             try:
                 if i > 0:
@@ -1032,6 +1225,7 @@ class ClientsCollector(MetricCollector):
 
                 # Process usage data for each client
                 for client_usage in usage_data:
+                    usage_record_count += 1
                     client_id = client_usage.get("clientId")
                     if not client_id or client_id not in client_map:
                         continue
@@ -1075,6 +1269,7 @@ class ClientsCollector(MetricCollector):
                         self.client_app_usage_sent.labels(**labels).set(float(sent_kb))
                         self.client_app_usage_recv.labels(**labels).set(float(received_kb))
                         self.client_app_usage_total.labels(**labels).set(float(total_kb))
+                        metric_count += 3
 
                         logger.debug(
                             "Set application usage metrics",
@@ -1103,7 +1298,17 @@ class ClientsCollector(MetricCollector):
             "Completed application usage collection",
             network_id=network_id,
             client_count=len(client_ids),
+            batch_count=batch_count,
+            usage_record_count=usage_record_count,
+            metric_count=metric_count,
+            duration_seconds=round(time.monotonic() - collection_start_time, 2),
         )
+        return {
+            "batch_count": batch_count,
+            "usage_record_count": usage_record_count,
+            "metric_count": metric_count,
+            "skipped": False,
+        }
 
     def _compute_signal_quality_cycle_budget(self, total_wireless_clients: int) -> int:
         """Compute RSSI/SNR sample budget for the current collector cycle."""
@@ -1234,10 +1439,16 @@ class ClientsCollector(MetricCollector):
         network_name: str,
         clients: list[NetworkClient],
         hostnames: dict[str, str | None],
-    ) -> None:
+    ) -> dict[str, int | bool]:
         """Collect wireless signal quality within the configured cycle budget."""
         if not self.settings.clients.signal_quality_enabled:
-            return
+            return {
+                "collected_count": 0,
+                "metric_count": 0,
+                "missing_data_count": 0,
+                "error_count": 0,
+                "skipped": True,
+            }
 
         wireless_clients = [
             client for client in clients if client.recentDeviceConnection == "Wireless"
@@ -1246,7 +1457,13 @@ class ClientsCollector(MetricCollector):
 
         if not wireless_clients:
             logger.debug("No wireless clients found in network", network_id=network_id)
-            return
+            return {
+                "collected_count": 0,
+                "metric_count": 0,
+                "missing_data_count": 0,
+                "error_count": 0,
+                "skipped": True,
+            }
 
         async with self._signal_quality_lock:
             self._signal_quality_current_total_wireless_clients += len(wireless_clients)
@@ -1259,7 +1476,13 @@ class ClientsCollector(MetricCollector):
                     network_wireless_clients=len(wireless_clients),
                     signal_quality_remaining_budget=self._signal_quality_remaining_budget,
                 )
-                return
+                return {
+                    "collected_count": 0,
+                    "metric_count": 0,
+                    "missing_data_count": 0,
+                    "error_count": 0,
+                    "skipped": True,
+                }
             network_limit = min(
                 self.settings.clients.signal_quality_max_clients_per_network,
                 self._signal_quality_remaining_budget,
@@ -1282,7 +1505,13 @@ class ClientsCollector(MetricCollector):
                 network_wireless_clients=len(wireless_clients),
                 signal_quality_remaining_budget=remaining_budget,
             )
-            return
+            return {
+                "collected_count": 0,
+                "metric_count": 0,
+                "missing_data_count": 0,
+                "error_count": 0,
+                "skipped": True,
+            }
 
         stats = await self._collect_wireless_signal_quality_for_clients(
             org_id=org_id,
@@ -1301,6 +1530,10 @@ class ClientsCollector(MetricCollector):
             self._signal_quality_cycle_metric_count += stats["metric_count"]
             self._signal_quality_cycle_missing_data_count += stats["missing_data_count"]
             self._signal_quality_cycle_error_count += stats["error_count"]
+        return {
+            **stats,
+            "skipped": False,
+        }
 
     async def _collect_wireless_signal_quality_for_clients(
         self,
@@ -1488,7 +1721,7 @@ class ClientsCollector(MetricCollector):
         self.client_store_total.set(store_stats["total_clients"])
         self.client_store_networks.set(store_stats["total_networks"])
 
-        logger.debug(
+        logger.info(
             "Updated cache metrics",
             dns_cache_total=dns_stats["total_entries"],
             dns_cache_valid=dns_stats["valid_entries"],
