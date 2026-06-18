@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -150,6 +151,60 @@ class ExporterApp:
         return {
             "metric_count": metric_count,
             "timeseries_count": timeseries_count,
+        }
+
+    def _summarize_metrics_payload(self, data: bytes) -> dict[str, Any]:
+        """Summarize the actual `/metrics` payload for diagnostics."""
+        sample_count = 0
+        metric_family_count = 0
+        prefix_series_counts: defaultdict[str, int] = defaultdict(int)
+        collector_series_counts: defaultdict[str, int] = defaultdict(int)
+        representative_metrics = {
+            "meraki_device_up": 0,
+            "meraki_client_status": 0,
+            "meraki_ms_port_status": 0,
+            "meraki_mr_packet_loss_total_percent": 0,
+            "meraki_exporter_collector_success_timestamp_seconds": 0,
+            "meraki_webhook_events_processed_total": 0,
+        }
+
+        for raw_line in data.decode("utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("# TYPE "):
+                metric_family_count += 1
+                continue
+            if line.startswith("#"):
+                continue
+
+            sample_count += 1
+            metric_name = line.split("{", 1)[0].split(" ", 1)[0]
+            if "{collector=" in line or ',collector="' in line:
+                collector_fragment = line.split('collector="', 1)[1]
+                collector_name = collector_fragment.split('"', 1)[0]
+                collector_series_counts[collector_name] += 1
+
+            if metric_name.startswith("meraki_webhook_"):
+                prefix_series_counts["meraki_webhook"] += 1
+            elif metric_name.startswith("meraki_exporter_"):
+                prefix_series_counts["meraki_exporter"] += 1
+            elif metric_name.startswith("meraki_"):
+                prefix_series_counts["meraki"] += 1
+
+            if metric_name in representative_metrics:
+                representative_metrics[metric_name] += 1
+
+        return {
+            "payload_bytes": len(data),
+            "metric_family_count": metric_family_count,
+            "sample_count": sample_count,
+            "series_by_prefix": dict(prefix_series_counts),
+            "series_with_collector_label_by_collector": dict(collector_series_counts),
+            "representative_metric_series_counts": representative_metrics,
+            "representative_metrics_present": {
+                name: count > 0 for name, count in representative_metrics.items()
+            },
         }
 
     @asynccontextmanager
@@ -557,7 +612,35 @@ class ExporterApp:
         @app.get("/metrics", response_class=Response)
         async def metrics() -> Response:
             """Prometheus metrics endpoint."""
-            data = generate_latest(REGISTRY)
+            expiration_stats = self.expiration_manager.get_stats()
+            try:
+                data = generate_latest(REGISTRY)
+            except Exception:
+                logger.exception(
+                    "Failed to generate metrics payload",
+                    exporter_role=infer_exporter_role(self.settings),
+                    expiration_total_tracked=expiration_stats.get("total_tracked", 0),
+                    expiration_by_collector=expiration_stats.get("by_collector", {}),
+                    expiration_tracked_metric_names_by_collector=expiration_stats.get(
+                        "tracked_metric_names_by_collector", {}
+                    ),
+                    expiration_last_cleanup=expiration_stats.get("last_cleanup_summary", {}),
+                )
+                raise HTTPException(status_code=500, detail="Failed to generate metrics")
+
+            payload_summary = self._summarize_metrics_payload(data)
+
+            logger.info(
+                "Generated metrics payload",
+                exporter_role=infer_exporter_role(self.settings),
+                **payload_summary,
+                expiration_total_tracked=expiration_stats.get("total_tracked", 0),
+                expiration_by_collector=expiration_stats.get("by_collector", {}),
+                expiration_tracked_metric_names_by_collector=expiration_stats.get(
+                    "tracked_metric_names_by_collector", {}
+                ),
+                expiration_last_cleanup=expiration_stats.get("last_cleanup_summary", {}),
+            )
 
             return Response(
                 content=data,

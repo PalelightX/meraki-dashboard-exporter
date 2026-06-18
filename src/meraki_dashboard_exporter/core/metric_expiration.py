@@ -74,6 +74,15 @@ class MetricExpirationManager:
 
         # Track metric count per collector
         self._metric_counts: defaultdict[str, int] = defaultdict(int)
+        self._metric_names_by_collector: defaultdict[str, defaultdict[str, int]] = defaultdict(
+            lambda: defaultdict(int)
+        )
+        self._last_cleanup_summary: dict[str, Any] = {
+            "last_run_timestamp": None,
+            "total_expired": 0,
+            "by_collector": {},
+            "sample_expired_metrics": [],
+        }
 
         # Background task
         self._cleanup_task: asyncio.Task[Any] | None = None
@@ -123,6 +132,7 @@ class MetricExpirationManager:
         current_time = time.time()
         if key not in self._metric_timestamps:
             self._metric_counts[collector_name] += 1
+            self._metric_names_by_collector[collector_name][metric_name] += 1
 
         self._metric_timestamps[key] = current_time
 
@@ -214,6 +224,7 @@ class MetricExpirationManager:
         current_time = time.time()
         expired_count = 0
         expired_by_collector: defaultdict[str, int] = defaultdict(int)
+        sample_expired_metrics: list[dict[str, Any]] = []
 
         # Default TTL for metrics without tier info (use MEDIUM)
         default_ttl = self._get_ttl_for_tier(UpdateTier.MEDIUM)
@@ -230,12 +241,23 @@ class MetricExpirationManager:
                 expired_keys.append(key)
                 expired_count += 1
                 expired_by_collector[collector_name] += 1
+                if len(sample_expired_metrics) < 10:
+                    sample_expired_metrics.append({
+                        "collector": collector_name,
+                        "metric_name": metric_name,
+                        "age_seconds": round(age, 2),
+                    })
 
         # Remove expired metrics from tracking
         for key in expired_keys:
-            collector_name = key[0]
+            collector_name, metric_name, _ = key
             del self._metric_timestamps[key]
             self._metric_counts[collector_name] -= 1
+            metric_name_count = self._metric_names_by_collector[collector_name].get(metric_name, 0)
+            if metric_name_count <= 1:
+                self._metric_names_by_collector[collector_name].pop(metric_name, None)
+            else:
+                self._metric_names_by_collector[collector_name][metric_name] = metric_name_count - 1
 
         # Update metrics
         for collector_name, count in expired_by_collector.items():
@@ -249,11 +271,19 @@ class MetricExpirationManager:
         for collector_name, count in self._metric_counts.items():
             self._tracked_metrics.labels(collector=collector_name).set(count)
 
+        self._last_cleanup_summary = {
+            "last_run_timestamp": current_time,
+            "total_expired": expired_count,
+            "by_collector": dict(expired_by_collector),
+            "sample_expired_metrics": sample_expired_metrics,
+        }
+
         if expired_count > 0:
             logger.info(
                 "Cleaned up expired metrics",
                 total_expired=expired_count,
                 by_collector=dict(expired_by_collector),
+                sample_expired_metrics=sample_expired_metrics,
             )
 
     def get_stats(self) -> dict[str, Any]:
@@ -268,5 +298,10 @@ class MetricExpirationManager:
         return {
             "total_tracked": len(self._metric_timestamps),
             "by_collector": dict(self._metric_counts),
+            "tracked_metric_names_by_collector": {
+                collector_name: dict(sorted(metric_names.items())[:20])
+                for collector_name, metric_names in self._metric_names_by_collector.items()
+            },
             "ttl_multiplier": self._ttl_multiplier,
+            "last_cleanup_summary": self._last_cleanup_summary,
         }
